@@ -1,7 +1,7 @@
 """Tests for the evaluation package. Run from the repo root: ``python -m pytest tests -q``.
 
-None of these need internet access. The VITS synthesis test runs only when the
-official VITS code is available (``VITS_DIR`` env var or ./vits-main).
+None of these need internet access. The VITS tests run only when the official VITS
+code is available (``VITS_DIR`` environment variable, or ./vits-main).
 """
 import json
 import os
@@ -14,6 +14,8 @@ import pytest
 
 from scripts.evaluation import audio, manifest, metrics, stats, timing
 from scripts.evaluation.prompts import PROMPTS
+from scripts.evaluation.speakers import rank_speakers
+from scripts.evaluation.text_normalise import normalise_input_text
 
 SR = 22050
 
@@ -24,7 +26,7 @@ def tone(seconds=1.0, freq=220.0, sr=SR, amp=0.3):
 
 
 def speechlike(seconds=1.5, sr=SR, seed=0):
-    """Harmonic signal with a moving pitch: rich enough spectrum for cepstral tests."""
+    """Harmonic signal with a moving pitch: a rich enough spectrum for cepstral tests."""
     rng = np.random.default_rng(seed)
     t = np.arange(int(seconds * sr)) / sr
     f0 = 120 + 30 * np.sin(2 * np.pi * 1.5 * t)
@@ -36,9 +38,8 @@ def speechlike(seconds=1.5, sr=SR, seed=0):
 # ------------------------------------------------------------------ audio
 def test_resample_length_and_identity():
     x = tone(1.0)
-    y = audio.resample(x, SR, 16000)
-    assert abs(len(y) - 16000) <= 1
-    assert audio.resample(x, SR, SR) is not None and len(audio.resample(x, SR, SR)) == len(x)
+    assert abs(len(audio.resample(x, SR, 16000)) - 16000) <= 1
+    assert len(audio.resample(x, SR, SR)) == len(x)
 
 
 def test_peak_normalise_and_silent_input():
@@ -48,43 +49,68 @@ def test_peak_normalise_and_silent_input():
 
 def test_trim_removes_leading_and_trailing_silence():
     x = np.concatenate([np.zeros(SR // 2), tone(1.0), np.zeros(SR // 2)]).astype(np.float32)
-    trimmed = audio.trim_silence(x, SR, top_db=40)
-    assert abs(len(trimmed) / SR - 1.0) < 0.05
+    assert abs(len(audio.trim_silence(x, SR, top_db=40)) / SR - 1.0) < 0.05
 
 
 def test_save_and_load_roundtrip(tmp_path):
     x = audio.peak_normalise(tone(0.5))
-    path = audio.save_wav(tmp_path / "sub" / "x.wav", x, SR)
-    y, sr = audio.load_audio(path)
+    y, sr = audio.load_audio(audio.save_wav(tmp_path / "sub" / "x.wav", x, SR))
     assert sr == SR and len(y) == len(x)
     assert np.max(np.abs(x - y)) < 1e-3  # 16-bit quantisation only
 
 
 # --------------------------------------------------------------- manifest
-def _write_manifest(tmp_path, wav_path_value):
+def _fake_dataset(tmp_path, n=6, wav_path_style="relative"):
+    """A tiny LJSpeech-shaped dataset plus train/test manifests in the build_splits format."""
     data_root = tmp_path / "LJSpeech-1.1"
     (data_root / "wavs").mkdir(parents=True)
-    audio.save_wav(data_root / "wavs" / "LJ001-0001.wav", tone(0.5), SR)
+    rows = []
+    for i in range(n):
+        utt = f"LJ001-{i:04d}"
+        audio.save_wav(data_root / "wavs" / f"{utt}.wav", speechlike(1.2 + 0.1 * i, seed=i), SR)
+        wav_path = f"LJSpeech-1.1/wavs/{utt}.wav" if wav_path_style == "relative" else f"elsewhere/{utt}.wav"
+        text = f"The clerk read sentence number {i + 1}."
+        rows.append({"wav_path": wav_path, "utt_id": utt, "raw_text": text, "norm_text": text,
+                     "clean_text": text.lower()})
     split_dir = tmp_path / "splits"
     split_dir.mkdir()
-    pd.DataFrame([{"wav_path": wav_path_value, "utt_id": "LJ001-0001", "raw_text": "Hello.",
-                   "norm_text": "Hello.", "clean_text": "hello."}]).to_csv(split_dir / "test_manifest.csv", index=False)
-    return data_root, split_dir / "test_manifest.csv"
+    pd.DataFrame(rows[: n // 2]).to_csv(split_dir / "train_manifest.csv", index=False)
+    pd.DataFrame(rows[n // 2:]).to_csv(split_dir / "test_manifest.csv", index=False)
+    return data_root, split_dir
 
 
 def test_manifest_resolves_paths_relative_to_a_different_cwd(tmp_path):
-    data_root, manifest_path = _write_manifest(tmp_path, "LJSpeech-1.1/wavs/LJ001-0001.wav")
-    df = manifest.load_manifest(manifest_path)  # path is relative to tmp_path, not to the cwd
-    assert Path(df.loc[0, "wav_path"]).is_file()
-    assert df.loc[0, "ref_text"] == "Hello."
+    _, split_dir = _fake_dataset(tmp_path)
+    df = manifest.load_manifest(split_dir / "test_manifest.csv")  # paths are relative to tmp_path, not the cwd
+    assert all(Path(p).is_file() for p in df["wav_path"])
+    assert df.loc[0, "ref_text"].startswith("The clerk")
 
 
 def test_manifest_falls_back_to_data_root(tmp_path):
-    data_root, manifest_path = _write_manifest(tmp_path, "somewhere/else/LJ001-0001.wav")
+    data_root, split_dir = _fake_dataset(tmp_path, wav_path_style="broken")
     with pytest.raises(FileNotFoundError):
-        manifest.load_manifest(manifest_path)
-    df = manifest.load_manifest(manifest_path, data_root=data_root)
-    assert Path(df.loc[0, "wav_path"]).is_file()
+        manifest.load_manifest(split_dir / "test_manifest.csv")
+    df = manifest.load_manifest(split_dir / "test_manifest.csv", data_root=data_root)
+    assert all(Path(p).is_file() for p in df["wav_path"])
+
+
+# ------------------------------------------------------- text normalisation
+@pytest.mark.parametrize("text, expected", [
+    ("In 1865.", "In eighteen sixty-five."),
+    ("It cost $5.", "It cost five dollars."),
+    ("Paid 12,500 dollars.", "Paid twelve thousand, five hundred dollars."),
+    ("The 3rd time.", "The third time."),
+    ("Up 10% & rising.", "Up ten percent and rising."),
+    ("Pi is 3.14.", "Pi is three point fourteen."),
+    ("No digits here.", "No digits here."),
+])
+def test_numbers_are_spelled_out(text, expected):
+    assert normalise_input_text(text) == expected
+
+
+def test_no_digits_survive_any_prompt():
+    for _, text in PROMPTS:
+        assert not any(ch.isdigit() for ch in normalise_input_text(text))
 
 
 # ----------------------------------------------------------------- MCD
@@ -115,6 +141,15 @@ def test_mcd_dtw_absorbs_a_timing_offset():
     assert abs(result["dur_ratio"] - 1.0) < 1e-6
 
 
+def test_cepstrum_uses_the_standard_scale():
+    """A log spectrum a*cos(k*w) must give c_k = a/2, the convention the MCD constant assumes."""
+    from scipy.fft import dct
+    n, k, a = 80, 5, 3.0
+    w = np.pi * (np.arange(n) + 0.5) / n
+    c = dct(a * np.cos(k * w), type=2, norm="ortho") / np.sqrt(2 * n)
+    assert np.isclose(c[k], a / 2)
+
+
 # ------------------------------------------------------------- WER / CER
 def test_wer_ignores_case_and_punctuation():
     r = metrics.word_char_errors("Hello, World!", "hello world", metrics.get_text_normaliser())
@@ -136,17 +171,24 @@ def test_whisper_normaliser_matches_spelled_out_numbers():
     normaliser = metrics.get_text_normaliser()
     if normaliser is metrics._basic_normalise:
         pytest.skip("openai-whisper not installed")
-    r = metrics.word_char_errors("He paid twenty one dollars.", "He paid $21.", normaliser)
-    assert r["wer"] == 0
+    assert metrics.word_char_errors("He paid twenty one dollars.", "He paid $21.", normaliser)["wer"] == 0
 
 
-# --------------------------------------------------- speaker similarity maths
+# ------------------------------------------------ speaker similarity
 def test_cosine_and_centroid():
     a, b = np.array([1.0, 0.0]), np.array([0.0, 1.0])
     assert np.isclose(metrics.cosine_similarity(a, a), 1.0)
     assert np.isclose(metrics.cosine_similarity(a, b), 0.0)
     c = metrics.speaker_centroid([a, b])
     assert np.isclose(np.linalg.norm(c), 1.0) and np.isclose(metrics.cosine_similarity(c, a), np.sqrt(0.5))
+
+
+def test_rank_speakers_puts_the_closest_voice_first():
+    voices = {0: np.array([0.0, 1.0]), 1: np.array([1.0, 0.1]), 2: np.array([1.0, 1.0])}
+    ranking = rank_speakers(synthesize=lambda text, sid: voices[sid], embed=lambda v: v,
+                            target_centroid=np.array([1.0, 0.0]), texts=["a", "b"], speaker_ids=[0, 1, 2])
+    assert ranking["speaker_id"].tolist() == [1, 2, 0]
+    assert ranking["rank"].tolist() == [1, 2, 3]
 
 
 # ------------------------------------------------------------------ stats
@@ -171,11 +213,16 @@ def test_ratio_ci_is_corpus_level():
 def test_paired_comparison_detects_a_shift_and_not_noise():
     rng = np.random.default_rng(0)
     a = rng.normal(0, 1, 150)
-    shifted = paired_comparison_result = stats.paired_comparison(a, a + 0.5 + rng.normal(0, 0.1, 150))
-    assert shifted["ci_low"] > 0 and shifted["wilcoxon_p"] < 0.001
+    shifted = stats.paired_comparison(a, a + 0.5 + rng.normal(0, 0.1, 150))
+    assert shifted["n"] == 150 and shifted["ci_low"] > 0 and shifted["wilcoxon_p"] < 0.001
+    assert shifted["cohens_dz"] > 2  # 0.5 shift with 0.1 noise is a huge effect
     same = stats.paired_comparison(a, a)
-    assert same["mean_diff"] == 0 and same["wilcoxon_p"] == 1.0
-    assert paired_comparison_result["n"] == 150
+    assert same["mean_diff"] == 0 and same["wilcoxon_p"] == 1.0 and same["cohens_dz"] == 0
+
+
+def test_holm_adjustment():
+    adjusted = stats.holm_adjust([0.01, 0.04, 0.03, np.nan])
+    assert np.allclose(adjusted[:3], [0.03, 0.06, 0.06]) and np.isnan(adjusted[3])
 
 
 # ----------------------------------------------------------------- timing
@@ -195,15 +242,55 @@ def test_latency_protocol_with_a_fake_synthesiser():
     assert 0 < summary["frontend_share"] < 1
 
 
-def test_describe_device_reports_hardware():
+def test_device_description_and_tag():
     info = timing.describe_device("cpu")
     assert info["device"] == "cpu" and info["cpu"] and info["torch"]
+    assert timing.device_tag("cuda:1") == "cuda" and timing.device_tag("cpu") == "cpu"
 
 
 # ---------------------------------------------------------------- prompts
 def test_at_least_ten_distinct_prompts():
     texts = [t for _, t in PROMPTS]
     assert len(texts) >= 10 and len(set(texts)) == len(texts)
+
+
+# ------------------------------------------------------------- compare.py
+def _fake_result(folder, name, utt_values, rtf=0.05, ground_truth=False, step=None):
+    folder.mkdir(parents=True)
+    per_utt = pd.DataFrame({"utt_id": [f"u{i}" for i in range(len(utt_values))], "mcd_dtw": utt_values,
+                            "dur_ratio": 1.0 + 0.01 * np.arange(len(utt_values))})
+    per_utt.to_csv(folder / "per_utterance.csv", index=False)
+    summary = {"experiment": name, "ground_truth": ground_truth, "step": step, "n_utterances": len(utt_values),
+               "metrics": {"mcd_dtw": dict(zip(["mean", "ci_low", "ci_high"], stats.bootstrap_ci(utt_values)),
+                                           n=len(utt_values))}, "corpus": {}}
+    (folder / "summary.json").write_text(json.dumps(summary))
+    if not ground_truth:
+        runs = pd.DataFrame({"text_id": [0, 0, 1, 1], "repeat": [0, 1, 0, 1], "latency_s": [0.1] * 4,
+                             "audio_s": [0.1 / rtf] * 4, "rtf": [rtf] * 4})
+        runs.to_csv(folder / "rtf_runs_cpu.csv", index=False)
+        lat = {**timing.summarise_latency(runs), "device": {"cpu": "Test CPU"}, "experiment": name, "step": step}
+        (folder / "latency_cpu.json").write_text(json.dumps(lat))
+
+
+def test_compare_builds_table_tests_and_figures(tmp_path):
+    from scripts import compare
+
+    rng = np.random.default_rng(0)
+    base = rng.normal(6.0, 0.5, 40)
+    _fake_result(tmp_path / "pretrained", "pretrained", base + 2.0)
+    _fake_result(tmp_path / "expA_1000", "expA", base + 0.5, step=1000)
+    _fake_result(tmp_path / "expA_2000", "expA", base, step=2000)
+    _fake_result(tmp_path / "expB_2000", "expB", base + 0.6 + rng.normal(0, 0.05, 40), step=2000)
+    out = tmp_path / "comparison"
+    result = compare.main([str(tmp_path / d) for d in ("pretrained", "expA_1000", "expA_2000", "expB_2000")]
+                          + ["--pair", "expA@2000", "expB", "--out", str(out)])
+    for name in ("comparison_table.csv", "comparison_table.md", "paired_tests.csv", "comparison.png",
+                 "learning_curves.png"):
+        assert (out / name).is_file(), name
+    assert "RTF CPU" in result["table"].columns
+    mcd = result["tests"].query("metric == 'mcd_dtw'").iloc[0]
+    assert mcd["verdict"] == "expA@2000 better"  # expB has higher (worse) MCD on every sentence
+    assert {"wilcoxon_p_holm", "cohens_dz", "better_if"} <= set(result["tests"].columns)
 
 
 # ------------------------------------------------------- VITS synthesis
@@ -214,37 +301,130 @@ def _vits_dir():
     return None
 
 
-@pytest.mark.skipif(_vits_dir() is None, reason="official VITS code not found (set VITS_DIR)")
-def test_vits_synthesis_is_seeded_and_checks_the_vocab(tmp_path):
+needs_vits = pytest.mark.skipif(_vits_dir() is None, reason="official VITS code not found (set VITS_DIR)")
+
+
+def _random_checkpoint(tmp_path, name, vocab_offset=0):
+    """A random-weight multi-speaker VITS generator saved in the official checkpoint format."""
     import torch
     from scripts.TextProcessor import TextProcessor
-    from scripts.evaluation.synthesizer import VITSSynthesizer, import_vits
+    from scripts.evaluation.synthesizer import import_vits
 
     vits_dir = _vits_dir()
     models, utils = import_vits(vits_dir)
     config = vits_dir / "configs" / "vctk_base.json"
     hps = utils.get_hparams_from_file(str(config))
-    n_vocab = TextProcessor().vocab_size
+    torch.manual_seed(0)
+    net = models.SynthesizerTrn(TextProcessor().vocab_size + vocab_offset, hps.data.filter_length // 2 + 1,
+                                hps.train.segment_size // hps.data.hop_length,
+                                n_speakers=hps.data.n_speakers, **hps.model)
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"model": net.state_dict(), "iteration": 0}, path)
+    return config, path
 
-    def random_checkpoint(vocab, name):
-        torch.manual_seed(0)
-        net = models.SynthesizerTrn(vocab, hps.data.filter_length // 2 + 1,
-                                    hps.train.segment_size // hps.data.hop_length,
-                                    n_speakers=hps.data.n_speakers, **hps.model)
-        path = tmp_path / name
-        torch.save({"model": net.state_dict(), "iteration": 0}, path)
-        return path
 
-    ckpt = random_checkpoint(n_vocab, "G_0.pth")
-    synth = VITSSynthesizer(config, ckpt, vits_dir=vits_dir, device="cpu", speaker_id=0)
+@needs_vits
+def test_vits_synthesis_is_seeded_and_validates_inputs(tmp_path):
+    from scripts.evaluation.synthesizer import VITSSynthesizer
+
+    config, ckpt = _random_checkpoint(tmp_path, "G_0.pth")
+    synth = VITSSynthesizer(config, ckpt, vits_dir=_vits_dir(), device="cpu", speaker_id=0)
     a1, info = synth.synthesize("Hello world.", seed=7)
     a2, _ = synth.synthesize("Hello world.", seed=7)
     a3, _ = synth.synthesize("Hello world.", seed=8)
     assert a1.ndim == 1 and a1.size > 0 and info["n_tokens"] > 0
     assert np.array_equal(a1, a2) and not np.array_equal(a1, a3)
+    # digits are spelled out, not dropped
+    assert len(synth.text_to_ids("I have 3 cats.")) > len(synth.text_to_ids("I have cats."))
 
-    with pytest.raises(ValueError, match="speaker"):
-        VITSSynthesizer(config, ckpt, vits_dir=vits_dir, device="cpu", speaker_id=None)
+    with pytest.raises(ValueError, match="multi-speaker"):
+        VITSSynthesizer(config, ckpt, vits_dir=_vits_dir(), device="cpu", speaker_id=None)
+    with pytest.raises(ValueError, match="between 0 and"):
+        VITSSynthesizer(config, ckpt, vits_dir=_vits_dir(), device="cpu", speaker_id=500)
+    _, bad = _random_checkpoint(tmp_path, "G_bad.pth", vocab_offset=1)
     with pytest.raises(ValueError, match="symbols"):
-        VITSSynthesizer(config, random_checkpoint(n_vocab + 1, "G_bad.pth"), vits_dir=vits_dir,
-                        device="cpu", speaker_id=0)
+        VITSSynthesizer(config, bad, vits_dir=_vits_dir(), device="cpu", speaker_id=0)
+
+
+@needs_vits
+def test_pick_speaker_ranks_every_speaker(tmp_path, monkeypatch):
+    """Runs scripts/pick_speaker.py on a 3-speaker random model with a stand-in speaker encoder."""
+    import torch
+    from scripts import pick_speaker
+    from scripts.TextProcessor import TextProcessor
+    from scripts.evaluation.synthesizer import import_vits
+
+    data_root, split_dir = _fake_dataset(tmp_path)
+    models, utils = import_vits(_vits_dir())
+    config = json.loads((_vits_dir() / "configs" / "vctk_base.json").read_text())
+    config["data"]["n_speakers"] = 3
+    config_path = tmp_path / "three_speakers.json"
+    config_path.write_text(json.dumps(config))
+    hps = utils.get_hparams_from_file(str(config_path))
+    torch.manual_seed(0)
+    net = models.SynthesizerTrn(TextProcessor().vocab_size, hps.data.filter_length // 2 + 1,
+                                hps.train.segment_size // hps.data.hop_length, n_speakers=3, **hps.model)
+    torch.save({"model": net.state_dict()}, tmp_path / "G_0.pth")
+
+    class FakeEncoder:  # spectral-shape "embedding": no download needed
+        def __init__(self, device):
+            pass
+
+        def embed(self, audio_16k):
+            spectrum = np.abs(np.fft.rfft(audio_16k, n=512))[:64]
+            return spectrum / (np.linalg.norm(spectrum) + 1e-12)
+
+    monkeypatch.setattr(pick_speaker, "SpeakerEncoder", FakeEncoder)
+    out = tmp_path / "ranking.csv"
+    pick_speaker.main(["--config", str(config_path), "--checkpoint", str(tmp_path / "G_0.pth"),
+                       "--vits_dir", str(_vits_dir()), "--ref_manifest", str(split_dir / "train_manifest.csv"),
+                       "--data_root", str(data_root), "--device", "cpu", "--out", str(out)])
+    ranking = pd.read_csv(out)
+    assert sorted(ranking["speaker_id"]) == [0, 1, 2]
+    assert ranking["similarity"].is_monotonic_decreasing
+
+
+@needs_vits
+def test_repo_frontend_gives_the_same_token_ids_as_official_vits():
+    """With the corrected symbol table, TextProcessor reproduces the official VITS front-end
+    (english_cleaners2 + espeak + blanks) token for token on ordinary sentences, i.e. the
+    pretrained checkpoint receives exactly the input format it was trained on."""
+    pytest.importorskip("unidecode")  # the official cleaners import it
+    import importlib
+    from scripts.TextProcessor import TextProcessor
+    from scripts.evaluation.synthesizer import _use_bundled_espeak, import_vits
+
+    import_vits(_vits_dir())
+    _use_bundled_espeak()
+    official_text = importlib.import_module("text")
+    commons = importlib.import_module("commons")
+    processor = TextProcessor(add_blank=True)
+    for sentence in ("The birch canoe slid on the smooth planks.",
+                     "It was the appropriate size to contain, in disassembled form,",
+                     "Did you really expect the report to be finished before the end of the week?"):
+        official = commons.intersperse(official_text.text_to_sequence(sentence, ["english_cleaners2"]), 0)
+        assert processor.text_to_sequence(sentence).tolist() == official, sentence
+
+
+@needs_vits
+def test_evaluate_end_to_end_and_timing_only_run(tmp_path):
+    from scripts import evaluate
+
+    data_root, split_dir = _fake_dataset(tmp_path)
+    config, ckpt = _random_checkpoint(tmp_path, "ckpt/G_1500.pth")
+    out = tmp_path / "results" / "expA"
+    common = ["--exp", "expA", "--config", str(config), "--checkpoint", str(ckpt), "--speaker_id", "0",
+              "--vits_dir", str(_vits_dir()), "--manifest", str(split_dir / "test_manifest.csv"),
+              "--data_root", str(data_root), "--device", "cpu", "--out_dir", str(out),
+              "--n_warmup", "1", "--n_repeats", "1", "--rtf_texts", "test"]
+    summary = evaluate.main(common + ["--metrics", "mcd,rtf"])
+    assert summary["step"] == 1500 and summary["n_utterances"] == 3
+    assert summary["metrics"]["mcd_dtw"]["n"] == 3 and "cpu" in summary["latency"]
+    for name in ("per_utterance.csv", "summary.json", "latency_cpu.json", "rtf_runs_cpu.csv"):
+        assert (out / name).is_file(), name
+    assert len(list((out / "wavs").glob("*.wav"))) == 3
+
+    before = (out / "summary.json").read_text()
+    evaluate.main(common + ["--metrics", "rtf", "--cpu_threads", "1"])  # timing-only must not touch summary.json
+    assert (out / "summary.json").read_text() == before

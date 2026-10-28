@@ -8,4 +8,5 @@ jiwer==4.0.0            # WER / CER
 openai-whisper==20250625  # ASR for intelligibility (downloads model weights on first use)
 speechbrain==1.1.2      # ECAPA-TDNN speaker embeddings (downloads from Hugging Face on first use)
 pytest==9.2.0           # tests/
+Unidecode==1.4.0        # only for --frontend vits (the official VITS text cleaners import it)
 # UTMOS is loaded with torch.hub from github.com/tarepan/SpeechMOS (needs torchaudio, already in requirements.txt)

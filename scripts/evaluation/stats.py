@@ -1,12 +1,12 @@
 """Uncertainty for the metrics: bootstrap confidence intervals and paired tests.
 
 Every system is scored on the same test sentences, so experiments are compared
-sentence by sentence (paired), which removes the variation caused by some
-sentences simply being harder than others.
+sentence by sentence (paired). That removes the variation caused by some sentences
+simply being harder than others.
 """
 from __future__ import annotations
 
-from typing import Dict, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
@@ -54,10 +54,13 @@ def paired_comparison(a: Sequence[float], b: Sequence[float], n_boot: int = N_BO
                       ci: float = CI_LEVEL, seed: int = 0) -> Dict[str, float]:
     """Compares system B against system A on the same utterances (difference = B - A).
 
-    Returns the mean difference with a bootstrap CI and a two-sided Wilcoxon
-    signed-rank p-value. If the CI excludes 0, the difference is unlikely to be
-    sentence-sampling noise. (It says nothing about training-run noise; that
-    needs a repeated training seed.)
+    Returns:
+    - the mean difference with a bootstrap CI,
+    - a two-sided Wilcoxon signed-rank p-value,
+    - Cohen's d_z (mean difference / SD of the differences): about 0.2 small, 0.5 medium, 0.8 large.
+
+    If the CI excludes 0, the difference is unlikely to be sentence-sampling noise. It
+    says nothing about training-run noise; that needs a repeated training seed.
     """
     from scipy.stats import wilcoxon
 
@@ -71,6 +74,27 @@ def paired_comparison(a: Sequence[float], b: Sequence[float], n_boot: int = N_BO
         p_value = float(wilcoxon(a, b, zero_method="wilcox").pvalue) if np.any(diff != 0) else 1.0
     except ValueError:
         p_value = float("nan")
+    sd = float(diff.std(ddof=1)) if diff.size > 1 else float("nan")
+    dz = mean_diff / sd if sd and sd > 0 else (0.0 if diff.size and np.all(diff == 0) else float("nan"))
     return {"n": int(a.size), "mean_a": float(a.mean()) if a.size else float("nan"),
             "mean_b": float(b.mean()) if b.size else float("nan"),
-            "mean_diff": mean_diff, "ci_low": lo, "ci_high": hi, "wilcoxon_p": p_value}
+            "mean_diff": mean_diff, "ci_low": lo, "ci_high": hi, "wilcoxon_p": p_value, "cohens_dz": dz}
+
+
+def holm_adjust(p_values: Sequence[float]) -> List[float]:
+    """Holm-Bonferroni adjusted p-values (controls false positives when testing several metrics).
+
+    NaNs stay NaN and are not counted in the number of tests.
+    """
+    p = np.asarray(p_values, dtype=np.float64)
+    adjusted = np.full(p.shape, np.nan)
+    valid = np.flatnonzero(~np.isnan(p))
+    m = valid.size
+    if m == 0:
+        return adjusted.tolist()
+    order = valid[np.argsort(p[valid], kind="stable")]
+    running_max = 0.0
+    for rank, idx in enumerate(order):
+        running_max = max(running_max, min(1.0, (m - rank) * p[idx]))
+        adjusted[idx] = running_max
+    return adjusted.tolist()

@@ -39,9 +39,10 @@ def test_blank_tokens_are_interspersed():
     assert bool((ids[0::2] == 0).all())
 
 
-@pytest.mark.xfail(strict=True, reason="Known issue: clean_normalised_text deletes digits, so numbers in "
-                                       "arbitrary input text are silently dropped. Expand numbers (e.g. "
-                                       "with inflect) before cleaning, then remove this marker.")
+@pytest.mark.xfail(strict=True, reason="Known, handled elsewhere: clean_normalised_text on its own deletes "
+                                       "digits. LJSpeech training text has no digits, and synth.py/evaluate.py "
+                                       "spell numbers out first (scripts/evaluation/text_normalise.py). If the "
+                                       "expansion moves into clean_normalised_text, remove this marker.")
 def test_numbers_survive_text_cleaning():
     cleaned = clean_normalised_text("The treasury paid 12,500 dollars in 1865.")
     assert any(ch.isdigit() for ch in cleaned) or "twelve" in cleaned

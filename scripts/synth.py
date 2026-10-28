@@ -5,13 +5,14 @@ Run from the repo root:
 
   # one sentence
   python scripts/synth.py --text "Hello world." --config configs/expA.json \
-      --checkpoint checkpoints/expA/G_latest.pth --speaker_id 0 --out wav_examples/hello.wav
+      --checkpoint checkpoints/expA/G_latest.pth --speaker_id <ID> --out wav_examples/hello.wav
 
   # the 12 fixed qualitative prompts -> wav_examples/expA_01.wav ... expA_12.wav (+ expA_prompts.json)
   python scripts/synth.py --prompts --exp expA --config configs/expA.json \
-      --checkpoint checkpoints/expA/G_latest.pth --speaker_id 0 --out_dir wav_examples
+      --checkpoint checkpoints/expA/G_latest.pth --speaker_id <ID> --out_dir wav_examples
 
---speaker_id is only for multi-speaker checkpoints (e.g. the VCTK-pretrained model).
+--speaker_id is only for multi-speaker checkpoints (e.g. the VCTK-pretrained model); use the ID
+the LJSpeech clips were fine-tuned with. Digits, money, % and & are spelled out before phonemisation.
 The VITS code folder defaults to $VITS_DIR or ./vits-main.
 """
 from __future__ import annotations
@@ -79,7 +80,8 @@ def main(argv=None) -> None:
     for i, (category, text) in enumerate(PROMPTS, start=1):
         audio, _ = synth.synthesize(text, seed=args.seed)
         path = save_wav(out_dir / f"{args.exp}_{i:02d}.wav", audio, synth.sample_rate)
-        index.append({"file": path.name, "category": category, "text": text})
+        index.append({"file": path.name, "category": category, "text": text,
+                      "spoken_text": synth.prepare_text(text)})  # after numbers are spelled out
         print(f"{path.name}  [{category}]  {text}")
     meta = {"experiment": args.exp, "checkpoint": args.checkpoint, "seed": args.seed,
             "speaker_id": args.speaker_id, "prompts": index}

@@ -10,7 +10,8 @@ Protocol (reported in summary.json so the report can state it):
    RTF = latency / duration of the generated audio (RTF < 1 is faster than real time).
 5. The device, CPU model, thread count and library versions are recorded, because
    timings are only comparable on the same hardware: time every experiment on
-   the same machine and the same GPU.
+   the same machine and the same GPU. Results are saved per device type
+   (latency_cuda.json, latency_cpu.json), so GPU and CPU numbers can sit side by side.
 """
 from __future__ import annotations
 
@@ -56,10 +57,17 @@ def describe_device(device: str) -> Dict[str, object]:
     return info
 
 
+def device_tag(device: str) -> str:
+    """'cuda:1' -> 'cuda', 'cpu' -> 'cpu': used to name latency files per device type."""
+    return str(device).split(":")[0]
+
+
 def _synchroniser(device: str) -> Callable[[], None]:
+    import torch
     if str(device).startswith("cuda"):
-        import torch
         return lambda: torch.cuda.synchronize(device)
+    if str(device).startswith("mps"):
+        return torch.mps.synchronize
     return lambda: None
 
 
