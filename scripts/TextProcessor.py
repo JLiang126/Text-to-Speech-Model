@@ -9,7 +9,7 @@ import unicodedata
 # Ensures input embedding compatibility with pretrained VCTK VITS checkpoints
 VITS_SYMBOLS = (
     ["_"] # Pad
-    + list(';:,."!?¡¿—…"«»“” ') # Punctuation 
+    + list(';:,.!?¡¿—…"«»“” ') # Punctuation 
     + list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") # Letters
     + list("ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘'̩'ᵻ") # IPA Letters
 )
