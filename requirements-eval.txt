@@ -1,0 +1,11 @@
+# Extra packages for evaluation (on top of requirements.txt). Tested together with
+# torch 2.14.1, numpy 2.5, pandas 3.0 on Python 3.13.
+#   pip install -r requirements.txt -r requirements-eval.txt
+librosa==1.0.0          # mel spectrogram + DTW for MCD
+soundfile==0.14.0       # wav read/write
+scipy==1.18.1           # resampling, DCT, Wilcoxon test
+jiwer==4.0.0            # WER / CER
+openai-whisper==20250625  # ASR for intelligibility (downloads model weights on first use)
+speechbrain==1.1.2      # ECAPA-TDNN speaker embeddings (downloads from Hugging Face on first use)
+pytest==9.2.0           # tests/
+# UTMOS is loaded with torch.hub from github.com/tarepan/SpeechMOS (needs torchaudio, already in requirements.txt)
