@@ -14,7 +14,8 @@ import pytest
 
 from scripts.evaluation import audio, manifest, metrics, stats, timing
 from scripts.evaluation.prompts import PROMPTS
-from scripts.evaluation.speakers import rank_speakers
+from scripts.evaluation import speakers
+from scripts.evaluation.synthesizer import checkpoint_step
 from scripts.evaluation.text_normalise import normalise_input_text
 
 SR = 22050
@@ -183,12 +184,63 @@ def test_cosine_and_centroid():
     assert np.isclose(np.linalg.norm(c), 1.0) and np.isclose(metrics.cosine_similarity(c, a), np.sqrt(0.5))
 
 
-def test_rank_speakers_puts_the_closest_voice_first():
-    voices = {0: np.array([0.0, 1.0]), 1: np.array([1.0, 0.1]), 2: np.array([1.0, 1.0])}
-    ranking = rank_speakers(synthesize=lambda text, sid: voices[sid], embed=lambda v: v,
-                            target_centroid=np.array([1.0, 0.0]), texts=["a", "b"], speaker_ids=[0, 1, 2])
-    assert ranking["speaker_id"].tolist() == [1, 2, 0]
-    assert ranking["rank"].tolist() == [1, 2, 3]
+def test_paired_and_centroid_similarity():
+    real = np.array([[1.0, 0.0], [0.0, 1.0]])            # LJ sentence 0 and 1
+    synth = np.array([[[2.0, 0.0], [0.0, 3.0]],          # speaker 0 matches both sentences
+                      [[0.0, 1.0], [1.0, 0.0]]])         # speaker 1 has them swapped
+    assert np.allclose(speakers.paired_similarity(synth, real), [[1, 1], [0, 0]])
+    # both speakers have the same average voice, so their centroids tie
+    assert np.allclose(speakers.centroid_similarity(synth, real), [1.0, 1.0])
+
+
+def _paired_scores(means, n_utts=40, noise=0.05, seed=0):
+    rng = np.random.default_rng(seed)
+    return np.asarray(means)[:, None] + rng.normal(0, noise, (len(means), n_utts))
+
+
+def test_rank_speakers_orders_with_uncertainty_and_skips_ineligible():
+    paired = _paired_scores([0.8, 0.5, 0.3, 0.6, 0.95])
+    eligible = [True, True, True, True, False]  # speaker 4 scores highest but was never trained
+    table = speakers.rank_speakers(paired, [10, 11, 12, 13, 14], eligible, n_boot=300)
+    ranked = table[table["eligible"]]
+    assert ranked["speaker_index"].tolist() == [10, 13, 11, 12] and ranked["rank"].tolist() == [1, 2, 3, 4]
+    assert table.iloc[-1]["speaker_index"] == 14 and pd.isna(table.iloc[-1]["rank"])
+    top = ranked.iloc[0]
+    assert top["ci_low"] <= top["similarity"] <= top["ci_high"]
+    assert top["p_closest"] > 0.99 and ranked.iloc[-1]["p_furthest"] > 0.99
+    assert ranked["rank_ci_low"].iloc[0] == 1
+    again = speakers.rank_speakers(paired, [10, 11, 12, 13, 14], eligible, n_boot=300)
+    pd.testing.assert_frame_equal(table, again)  # seeded bootstrap
+    assert speakers.pick_conditions(table) == {"closest": 10, "median": 13, "furthest": 12}
+
+
+def test_split_half_reliability_separates_signal_from_noise():
+    clear = speakers.split_half_reliability(_paired_scores(np.linspace(0.2, 0.9, 20)))
+    noise = speakers.split_half_reliability(_paired_scores(np.full(20, 0.5), noise=0.2))
+    assert clear["split_half_spearman"] > 0.95 and clear["spearman_brown"] >= clear["split_half_spearman"]
+    assert abs(noise["split_half_spearman"]) < 0.6
+
+
+def test_f0_median_tracks_pitch():
+    low = speechlike(2.0, sr=16000)                         # pitch moves around 120 Hz
+    high = audio.resample(speechlike(2.0, sr=16000), 16000, 8800)[:32000]  # same signal played faster
+    assert abs(speakers.f0_median(low, 16000) - 120) < 12
+    assert abs(speakers.f0_median(high, 16000) - 120 * 16000 / 8800) < 20
+    assert np.isnan(speakers.f0_median(np.zeros(100, np.float32), 16000))
+
+
+def test_vctk_speaker_table_lists_the_trained_indices():
+    table = speakers.load_vctk_speakers()
+    assert table.index.tolist() == list(range(108))  # 109 embeddings, index 108 never trained
+    assert table["vctk_id"].is_unique and table["vctk_id"].str.match(r"^p\d{3}$").all()
+    assert (table["n_train_utts"] > 0).all()
+
+
+def test_checkpoint_step_from_both_formats():
+    assert checkpoint_step("checkpoints/expA/G_10000.pth") == 10000
+    assert checkpoint_step("runs/expA/checkpoint-2000") == 2000
+    assert checkpoint_step("runs/expA/checkpoint-2000/") == 2000
+    assert checkpoint_step("runs/expA") is None and checkpoint_step(None) is None
 
 
 # ------------------------------------------------------------------ stats
@@ -347,42 +399,135 @@ def test_vits_synthesis_is_seeded_and_validates_inputs(tmp_path):
         VITSSynthesizer(config, bad, vits_dir=_vits_dir(), device="cpu", speaker_id=0)
 
 
-@needs_vits
-def test_pick_speaker_ranks_every_speaker(tmp_path, monkeypatch):
-    """Runs scripts/pick_speaker.py on a 3-speaker random model with a stand-in speaker encoder."""
+# ------------------------------------------- Hugging Face format (finetune-hf-vits)
+needs_transformers = pytest.mark.skipif(
+    __import__("importlib").util.find_spec("transformers") is None, reason="transformers not installed")
+
+
+def _tiny_hf_model(folder, num_speakers=4):
+    """A small random transformers VitsModel + VitsTokenizer saved like a finetune-hf-vits run folder."""
     import torch
-    from scripts import pick_speaker
-    from scripts.TextProcessor import TextProcessor
-    from scripts.evaluation.synthesizer import import_vits
+    from transformers import VitsConfig, VitsModel, VitsTokenizer
+    from scripts.TextProcessor import VITS_SYMBOLS
+
+    folder.mkdir(parents=True, exist_ok=True)
+    vocab = folder / "vocab.json"
+    vocab.write_text(json.dumps({s: i for i, s in enumerate(VITS_SYMBOLS)}, ensure_ascii=False), encoding="utf-8")
+    tokenizer = VitsTokenizer(str(vocab), pad_token="_", unk_token="_", add_blank=True, phonemize=True)
+    config = VitsConfig(vocab_size=len(VITS_SYMBOLS), hidden_size=32, num_hidden_layers=2, num_attention_heads=2,
+                        ffn_dim=64, flow_size=32, upsample_initial_channel=32, num_speakers=num_speakers,
+                        speaker_embedding_size=16, prior_encoder_num_flows=2, prior_encoder_num_wavenet_layers=2,
+                        posterior_encoder_num_wavenet_layers=2, duration_predictor_num_flows=2,
+                        duration_predictor_filter_channels=32, depth_separable_channels=2,
+                        resblock_kernel_sizes=[3], resblock_dilation_sizes=[[1, 3]], sampling_rate=SR)
+    torch.manual_seed(0)
+    model = VitsModel(config).eval()
+    model.save_pretrained(folder)
+    tokenizer.save_pretrained(folder)
+    return model
+
+
+def _training_checkpoint(model, folder):
+    """What accelerator.save_state writes mid-training: weight norm still on (both PyTorch
+    layouts), generator and discriminator in separate files, no config.json."""
+    import copy
+    from safetensors.torch import save_file
+    from torch.nn.utils import weight_norm
+    from torch.nn.utils.parametrizations import weight_norm as parametrized_weight_norm
+
+    net = copy.deepcopy(model)
+    for i, layer in enumerate(net.decoder.upsampler):
+        (parametrized_weight_norm if i % 2 else weight_norm)(layer)
+    for flow in net.flow.flows:
+        weight_norm(flow.conv_pre)
+        parametrized_weight_norm(flow.conv_post)
+    folder.mkdir(parents=True)
+    save_file({k: v.contiguous() for k, v in net.state_dict().items()}, folder / "model.safetensors")
+    import torch
+    save_file({"discriminator.layer.weight": torch.zeros(3)}, folder / "model_1.safetensors")
+
+
+@needs_transformers
+def test_hf_synthesis_is_seeded_and_reads_training_checkpoints(tmp_path):
+    from scripts.evaluation.synthesizer import HFVITSSynthesizer, load_synthesizer, resolve_hf_model
+
+    model = _tiny_hf_model(tmp_path / "run")
+    synth = HFVITSSynthesizer(tmp_path / "run", speaker_id=1)
+    a1, info = synth.synthesize("Hello world, this is a test.", seed=7)
+    a2, _ = synth.synthesize("Hello world, this is a test.", seed=7)
+    a3, _ = synth.synthesize("Hello world, this is a test.", seed=8)
+    assert a1.ndim == 1 and a1.size > 0 and info["n_tokens"] > 0
+    assert np.array_equal(a1, a2) and not np.array_equal(a1, a3)
+    assert synth.speaker_table().shape == (4, 16) and synth.frontend == "hf"
+    assert "three hundred" in synth.prepare_text("I have 300 cats.")  # digits spelled out, not dropped
+
+    _training_checkpoint(model, tmp_path / "run" / "checkpoint-1500")
+    assert resolve_hf_model(tmp_path / "run" / "checkpoint-1500")[1].name == "model.safetensors"
+    from_checkpoint = load_synthesizer(model=tmp_path / "run" / "checkpoint-1500", speaker_id=1)
+    b1, _ = from_checkpoint.synthesize("Hello world, this is a test.", seed=7)
+    assert b1.shape == a1.shape and np.allclose(a1, b1, atol=1e-3)  # weight norm folded back exactly
+
+    with pytest.raises(ValueError, match="multi-speaker"):
+        HFVITSSynthesizer(tmp_path / "run", speaker_id=None)
+    with pytest.raises(ValueError, match="between 0 and"):
+        HFVITSSynthesizer(tmp_path / "run", speaker_id=4)
+    with pytest.raises(ValueError, match="not both"):
+        load_synthesizer(model=tmp_path / "run", config="x.json", speaker_id=1)
+
+
+class _FakeEncoder:  # spectral-shape "embedding": no download needed
+    def __init__(self, device):
+        pass
+
+    def embed(self, audio_16k):
+        spectrum = np.abs(np.fft.rfft(audio_16k, n=512))[:64]
+        return spectrum / (np.linalg.norm(spectrum) + 1e-12)
+
+
+@needs_transformers
+def test_rank_speakers_script_end_to_end_and_resume(tmp_path, monkeypatch):
+    from scripts import rank_speakers
 
     data_root, split_dir = _fake_dataset(tmp_path)
-    models, utils = import_vits(_vits_dir())
-    config = json.loads((_vits_dir() / "configs" / "vctk_base.json").read_text())
-    config["data"]["n_speakers"] = 3
-    config_path = tmp_path / "three_speakers.json"
-    config_path.write_text(json.dumps(config))
-    hps = utils.get_hparams_from_file(str(config_path))
-    torch.manual_seed(0)
-    net = models.SynthesizerTrn(TextProcessor().vocab_size, hps.data.filter_length // 2 + 1,
-                                hps.train.segment_size // hps.data.hop_length, n_speakers=3, **hps.model)
-    torch.save({"model": net.state_dict()}, tmp_path / "G_0.pth")
+    _tiny_hf_model(tmp_path / "vctk", num_speakers=109)  # same table size as the VCTK model
+    monkeypatch.setattr(rank_speakers, "SpeakerEncoder", _FakeEncoder)
+    out = tmp_path / "ranking"
+    argv = ["--model", str(tmp_path / "vctk"), "--speakers", "105-108", "--n_utts", "2", "--n_boot", "50",
+            "--manifest", str(split_dir / "train_manifest.csv"), "--data_root", str(data_root),
+            "--device", "cpu", "--f0_utts", "1", "--out_dir", str(out)]
+    result = rank_speakers.main(argv)
+    table, summary = result["table"], result["summary"]
+    for name in ("speaker_ranking.csv", "summary.json", "speaker_ranking.png", "embeddings.npz"):
+        assert (out / name).is_file(), name
+    assert sorted(table["speaker_index"]) == [105, 106, 107, 108]
+    assert summary["excluded_untrained"] == [108] and table.iloc[-1]["speaker_index"] == 108
+    assert table[table["eligible"]]["rank"].tolist() == [1, 2, 3]
+    assert set(summary["conditions"]) == {"closest", "median", "furthest"}
+    assert table.loc[table["speaker_index"] == 105, "vctk_id"].item() == "p257"
+    assert len(list((out / "wavs").glob("*.wav"))) == 4  # 3 picks + the real recording
 
-    class FakeEncoder:  # spectral-shape "embedding": no download needed
-        def __init__(self, device):
-            pass
+    def fail_if_called(*args, **kwargs):  # only finished sentences: --resume must not redo any
+        raise AssertionError("--resume processed a finished sentence again")
 
-        def embed(self, audio_16k):
-            spectrum = np.abs(np.fft.rfft(audio_16k, n=512))[:64]
-            return spectrum / (np.linalg.norm(spectrum) + 1e-12)
+    monkeypatch.setattr(rank_speakers, "f0_median", fail_if_called)
+    resumed = rank_speakers.main(argv + ["--resume"])
+    pd.testing.assert_series_equal(resumed["table"]["similarity"], table["similarity"])
 
-    monkeypatch.setattr(pick_speaker, "SpeakerEncoder", FakeEncoder)
-    out = tmp_path / "ranking.csv"
-    pick_speaker.main(["--config", str(config_path), "--checkpoint", str(tmp_path / "G_0.pth"),
-                       "--vits_dir", str(_vits_dir()), "--ref_manifest", str(split_dir / "train_manifest.csv"),
-                       "--data_root", str(data_root), "--device", "cpu", "--out", str(out)])
-    ranking = pd.read_csv(out)
-    assert sorted(ranking["speaker_id"]) == [0, 1, 2]
-    assert ranking["similarity"].is_monotonic_decreasing
+
+@needs_transformers
+def test_evaluate_runs_a_hf_training_checkpoint(tmp_path):
+    from scripts import evaluate
+
+    data_root, split_dir = _fake_dataset(tmp_path)
+    model = _tiny_hf_model(tmp_path / "runs" / "expA")
+    _training_checkpoint(model, tmp_path / "runs" / "expA" / "checkpoint-1500")
+    out = tmp_path / "results" / "expA_1500"
+    summary = evaluate.main(["--exp", "expA", "--model", str(tmp_path / "runs" / "expA" / "checkpoint-1500"),
+                             "--speaker_id", "2", "--manifest", str(split_dir / "test_manifest.csv"),
+                             "--data_root", str(data_root), "--device", "cpu", "--out_dir", str(out),
+                             "--metrics", "mcd", "--limit", "2"])
+    assert summary["step"] == 1500 and summary["n_utterances"] == 2 and summary["settings"]["frontend"] == "hf"
+    assert summary["metrics"]["mcd_dtw"]["n"] == 2
 
 
 @needs_vits

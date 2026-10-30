@@ -11,46 +11,52 @@ controlled change. Owner: Adi.
 | `scripts/synth.py` | Single "text -> .wav" entry point. `--prompts` writes the 12 fixed prompts to `wav_examples/<exp>_NN.wav` |
 | `scripts/evaluate.py` | Scores one system on the test split. Writes per-sentence metrics, a summary with 95% CIs, and latency/RTF |
 | `scripts/compare.py` | Combines several systems into the report table, paired significance tests and figures |
-| `scripts/pick_speaker.py` | Ranks the 109 VCTK speakers by how close they sound to LJSpeech, giving a defensible fine-tuning `--speaker_id` |
-| `scripts/evaluation/` | The building blocks: `audio`, `manifest`, `metrics`, `timing`, `stats`, `synthesizer`, `text_normalise`, `speakers`, `prompts` |
-| `tests/` | `python -m pytest tests -q`. Runs offline. The VITS tests need `VITS_DIR` to point at the VITS code |
+| `scripts/rank_speakers.py` | Ranks the VCTK speakers by how close they sound to LJSpeech, with bootstrap uncertainty: picks the closest / median / furthest starting speaker for the speaker-similarity experiment |
+| `scripts/evaluation/` | The building blocks: `audio`, `manifest`, `metrics`, `timing`, `stats`, `synthesizer`, `text_normalise`, `speakers`, `prompts`, plus `vctk_speakers.csv` (speaker index -> VCTK ID) |
+| `tests/` | `python -m pytest tests -q`. Runs offline. The official-format tests need `VITS_DIR` to point at the VITS code |
+
+## Two checkpoint formats
+
+Every script takes either:
+- **`--model`**: Hugging Face format (`transformers.VitsModel`), what `finetune-hf-vits-main/` trains. Give a hub id (`ylacombe/vits-vctk-with-discriminator`, the pretrained start), a finished run's `output_dir`, or one of its `checkpoint-<step>` folders (weight norm is folded back automatically, config and tokenizer come from the run folder). Text goes through the checkpoint's own `VitsTokenizer`, as in fine-tuning.
+- **`--config` + `--checkpoint`**: official VITS format (`G_<step>.pth`), text through `scripts/TextProcessor.py`.
 
 ## Run order (from the repo root)
 
 ```bash
 pip install -r requirements.txt -r requirements-eval.txt
-export VITS_DIR=vits-main        # Windows PowerShell: $env:VITS_DIR="vits-main"
 
-# 0. (multi-speaker fine-tuning only) pick the VCTK speaker ID that sounds most like LJSpeech
-python scripts/pick_speaker.py --config vits-main/configs/vctk_base.json \
-    --checkpoint checkpoints/pretrained_vctk.pth
+# 0. Rank the VCTK speakers against LJSpeech (quick CPU check; GPU: --n_utts 0 --device cuda)
+python scripts/rank_speakers.py --n_utts 5
 
 # 1. Ceiling: the real recordings
 python scripts/evaluate.py --exp ground_truth --ground_truth
 
-# 2. Floor: the pretrained model before any fine-tuning
-python scripts/evaluate.py --exp pretrained --config vits-main/configs/vctk_base.json \
-    --checkpoint checkpoints/pretrained_vctk.pth --speaker_id <ID>
+# 2. Floor: the pretrained model before any fine-tuning, with the experiment's speaker index
+python scripts/evaluate.py --exp pretrained --model ylacombe/vits-vctk-with-discriminator --speaker_id <ID>
 
 # 3. Each experiment, at the final step (and at earlier steps too, for learning curves)
-python scripts/evaluate.py --exp expA --config configs/expA.json \
-    --checkpoint checkpoints/expA/G_10000.pth --speaker_id <ID> --out_dir results/expA_step10000
+python scripts/evaluate.py --exp expA --model runs/expA --speaker_id <ID>
+python scripts/evaluate.py --exp expA --model runs/expA/checkpoint-2000 --speaker_id <ID> \
+    --out_dir results/expA_step2000
 
 # 4. CPU timing for the same checkpoints (adds latency_cpu.json, nothing else changes)
-python scripts/evaluate.py --exp expA ... --out_dir results/expA_step10000 --metrics rtf --device cpu
+python scripts/evaluate.py --exp expA ... --out_dir results/expA --metrics rtf --device cpu
 
 # 5. Report table, paired tests and figures
-python scripts/compare.py results/ground_truth results/pretrained results/expA_step10000 \
-    results/expB_step10000 --pair expA expB --out results/comparison
+python scripts/compare.py results/ground_truth results/pretrained results/expA results/expB \
+    --pair expA expB --out results/comparison
 
 # 6. The >=10 qualitative wavs for the submission
-python scripts/synth.py --prompts --exp expA --config configs/expA.json \
-    --checkpoint checkpoints/expA/G_10000.pth --speaker_id <ID> --out_dir wav_examples
+python scripts/synth.py --prompts --exp expA --model runs/expA --speaker_id <ID> --out_dir wav_examples
 ```
+
+Official-format equivalents: replace `--model X` with `--config <json> --checkpoint <G_step.pth>` and set
+`VITS_DIR` (PowerShell: `$env:VITS_DIR="vits-main"`).
 
 Notes:
 - **Smoke test** with no downloads: `--limit 5 --metrics mcd,rtf`.
-- **`--speaker_id`** is only for multi-speaker checkpoints. Use the same ID the LJSpeech clips were fine-tuned with.
+- **`--speaker_id`** is only for multi-speaker checkpoints. Use the same index the LJSpeech clips were fine-tuned with, for the pretrained floor too.
 - **Learning curves:** pass the same `--exp` name with a different `--out_dir` per step. `compare.py` plots metric vs step automatically.
 - **Windows:** the trailing `\` line continuations are bash-only. Put each command on one line.
 
@@ -93,7 +99,26 @@ How to read them:
 - **Same test sentences:** the same test manifest for every system. It is never used for training or for picking checkpoints.
 - **Same seeds:** each sentence gets its own seed (CRC32 of `seed:utt_id`), identical across systems. VITS samples noise at inference (`noise_scale` 0.667, `noise_scale_w` 0.8). Without fixed seeds, part of any difference would be sampling luck.
 - **Same preprocessing for all audio:** DC removal, peak normalisation to 0.95 and silence trimming at -40 dB, mirroring `scripts/AudioProcessor.py`.
-- **Same text front-end as training:** `scripts/TextProcessor.py`.
+- **Same text front-end as training:** the checkpoint's own `VitsTokenizer` (Hugging Face format) or `scripts/TextProcessor.py` (official format).
+
+## Speaker ranking (`rank_speakers.py`)
+
+The VCTK-pretrained VITS has one learned embedding per speaker index, and fine-tuning on
+LJSpeech continues from whichever index the clips are given. The speaker-similarity
+experiment changes only that index, so the choice of indices needs to be defensible.
+
+1. `--n_utts` LJSpeech **training** sentences, sampled with a fixed seed (the test split stays unseen).
+2. Every speaker index says every sentence, with that sentence's seed (same noise draw for every speaker).
+3. Real and synthetic audio get the evaluation preprocessing and an ECAPA-TDNN embedding.
+4. **Score** = mean over sentences of cos(speaker s saying sentence i, the real recording of sentence i). Same words on both sides, so the score is about the voice. `centroid_similarity` (mean voice vs mean LJSpeech voice) is reported as a cross-check.
+5. **Uncertainty:** 1,000 bootstrap resamples of the sentences (all speakers resampled together) give a 95% CI per score, a 95% CI per rank, and `p_closest` / `p_furthest`, the share of resamples in which a speaker comes out closest / furthest.
+6. **Is `--n_utts` enough?** `split_half_spearman` correlates the ranking from odd vs even sentences (Spearman-Brown corrects it to the full set). Near 1 means more sentences would not change the picks.
+
+Things to know before using the picks:
+- **Index 108 is excluded.** The official VCTK config allocates 109 embeddings, but the official training filelist only uses indices 0-107 (`vctk_speakers.csv`, 108 speakers). Index 108 was never trained, so it would rank as an outlier for the wrong reason. `--include_untrained` keeps it.
+- **Pitch/gender confound.** LJSpeech is one female speaker. The closest voices will likely be female and the furthest male, so "closest vs furthest" also means "same vs different gender". The `f0_median_hz` column and the right-hand plot show this. Adding the median speaker as a third condition, or a far female speaker, separates "how similar" from "which gender".
+- **The index must reach the model during fine-tuning.** In `finetune-hf-vits-main/run_vits_finetuning.py`, the speaker index is only passed when the dataset has a column literally named `speaker_id` (the collator checks for that name). Without it `speaker_id=None`, the model trains with no speaker conditioning at all, and every "condition" is identical. Add a constant `speaker_id` column set to the chosen index, set `speaker_id_column_name: "speaker_id"`, and leave `filter_on_speaker_id` unset. Evaluate with the same `--speaker_id`.
+- **Speaker IDs** (`p225`...) assume the checkpoint keeps the official VITS VCTK speaker order. That holds for conversions of the official release; `ylacombe/vits-vctk-with-discriminator` has no model card to confirm it, so treat the IDs as labels and rely on the indices.
 
 ## Statistics in `paired_tests.csv`
 
@@ -126,7 +151,12 @@ These cover sentence-to-sentence variation, not training-run variation. That nee
 - `comparison.png`.
 - `learning_curves.png`, when an experiment was scored at two or more steps.
 
-`results/speaker_ranking.csv` (from `pick_speaker.py`).
+`results/speaker_ranking/` (from `rank_speakers.py`):
+- `speaker_ranking.csv`: one row per speaker index, closest first.
+- `summary.json`: the closest / median / furthest picks, reliability, pitch relation, settings.
+- `speaker_ranking.png`: scores with CIs, and score against pitch.
+- `embeddings.npz`: every embedding; `--resume` continues a stopped run from it.
+- `wavs/`: one training sentence by each pick, plus the real recording.
 
 ## Notebook cells (section 1.4)
 
@@ -149,6 +179,11 @@ for exp in ("expA", "expB"):
 ## Sources
 
 - **VITS:** Kim, Kong & Son (2021), https://github.com/jaywalnut310/vits (MIT).
+- **Hugging Face VITS and fine-tuning code:** `transformers` `VitsModel`; Y. Lacombe, https://github.com/ylacombe/finetune-hf-vits (MIT).
+- **VCTK corpus:** Yamagishi, Veaux & MacDonald (2019), CSTR VCTK Corpus v0.92, University of Edinburgh.
+- **Bootstrap:** Efron & Tibshirani (1993), *An Introduction to the Bootstrap*.
+- **Split-half reliability:** Spearman (1910) and Brown (1910), British Journal of Psychology.
+- **YIN pitch:** de Cheveigné & Kawahara (2002), JASA 111(4).
 - **Whisper:** Radford et al. (2023), https://github.com/openai/whisper (MIT).
 - **ECAPA-TDNN:** Desplanques, Thienpondt & Demuynck (2020), https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb (Apache-2.0).
 - **UTMOS:** Saeki et al. (2022), via https://github.com/tarepan/SpeechMOS (MIT).
