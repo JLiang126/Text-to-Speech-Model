@@ -214,6 +214,30 @@ def test_rank_speakers_orders_with_uncertainty_and_skips_ineligible():
     assert speakers.pick_conditions(table) == {"closest": 10, "median": 13, "furthest": 12}
 
 
+def test_similarity_baselines_give_the_scale():
+    rng = np.random.default_rng(0)
+    lj = rng.normal(size=16)
+    real = lj + 0.1 * rng.normal(size=(6, 16))                   # one voice, six sentences
+    voices = rng.normal(size=(5, 16))
+    synth = voices[:, None, :] + 0.1 * rng.normal(size=(5, 6, 16))  # five different voices
+    base = speakers.similarity_baselines(synth, real, eligible=[True] * 4 + [False])
+    assert base["real_vs_real"] > 0.95 and base["same_synthetic_speaker"] > 0.95
+    assert abs(base["different_synthetic_speakers"]) < 0.5
+    # the |sum|^2 shortcut equals the explicit mean over pairs
+    u = real / np.linalg.norm(real, axis=1, keepdims=True)
+    explicit = np.mean([u[i] @ u[j] for i in range(6) for j in range(i + 1, 6)])
+    assert np.isclose(base["real_vs_real"], explicit)
+
+
+def test_pitch_groups_pick_within_each_group():
+    table = pd.DataFrame({"speaker_index": [1, 2, 3, 4, 5], "eligible": [True, True, True, True, False],
+                          "similarity": [0.3, 0.1, 0.2, -0.1, 0.9],
+                          "f0_median_hz": [110.0, 120.0, 210.0, 200.0, 205.0]})
+    groups = speakers.pitch_groups(table, threshold_hz=160)
+    assert groups["low"]["n"] == 2 and groups["low"]["closest"] == 1 and groups["low"]["furthest"] == 2
+    assert groups["high"]["n"] == 2 and groups["high"]["closest"] == 3 and groups["high"]["furthest"] == 4
+
+
 def test_split_half_reliability_separates_signal_from_noise():
     clear = speakers.split_half_reliability(_paired_scores(np.linspace(0.2, 0.9, 20)))
     noise = speakers.split_half_reliability(_paired_scores(np.full(20, 0.5), noise=0.2))
@@ -494,7 +518,7 @@ def test_rank_speakers_script_end_to_end_and_resume(tmp_path, monkeypatch):
     out = tmp_path / "ranking"
     argv = ["--model", str(tmp_path / "vctk"), "--speakers", "105-108", "--n_utts", "2", "--n_boot", "50",
             "--manifest", str(split_dir / "train_manifest.csv"), "--data_root", str(data_root),
-            "--device", "cpu", "--f0_utts", "1", "--out_dir", str(out)]
+            "--device", "cpu", "--f0_utts", "1", "--mcd_utts", "2", "--out_dir", str(out)]
     result = rank_speakers.main(argv)
     table, summary = result["table"], result["summary"]
     for name in ("speaker_ranking.csv", "summary.json", "speaker_ranking.png", "embeddings.npz"):
@@ -504,7 +528,11 @@ def test_rank_speakers_script_end_to_end_and_resume(tmp_path, monkeypatch):
     assert table[table["eligible"]]["rank"].tolist() == [1, 2, 3]
     assert set(summary["conditions"]) == {"closest", "median", "furthest"}
     assert table.loc[table["speaker_index"] == 105, "vctk_id"].item() == "p257"
-    assert len(list((out / "wavs").glob("*.wav"))) == 4  # 3 picks + the real recording
+    wavs = sorted(p.name for p in (out / "wavs").glob("*.wav"))
+    assert wavs[-1].startswith("real_") and {"closest", "median", "furthest"} <= {w.split("_spk")[0] for w in wavs}
+    assert table.loc[table["eligible"], "mcd_db"].notna().all()  # MCD cross-check on the first 2 sentences
+    assert {"baselines", "pitch_groups", "agreement"} <= set(summary)
+    assert summary["settings"]["sample_rate"] == SR
 
     def fail_if_called(*args, **kwargs):  # only finished sentences: --resume must not redo any
         raise AssertionError("--resume processed a finished sentence again")
@@ -512,6 +540,38 @@ def test_rank_speakers_script_end_to_end_and_resume(tmp_path, monkeypatch):
     monkeypatch.setattr(rank_speakers, "f0_median", fail_if_called)
     resumed = rank_speakers.main(argv + ["--resume"])
     pd.testing.assert_series_equal(resumed["table"]["similarity"], table["similarity"])
+
+    # a run saved before MCD existed still re-analyses (MCD just stays empty)
+    saved = dict(np.load(out / "embeddings.npz"))
+    del saved["mcd"]
+    np.savez(out / "embeddings.npz", **saved)
+    old = rank_speakers.main(argv + ["--resume"])
+    assert old["table"]["mcd_db"].isna().all() and np.isnan(old["summary"]["agreement"]["ecapa_vs_mcd_spearman"])
+
+
+@needs_transformers
+def test_rank_speakers_extends_a_finished_run(tmp_path, monkeypatch):
+    """--resume with a larger --n_utts keeps the finished sentences and only adds new ones."""
+    from scripts import rank_speakers
+
+    data_root, split_dir = _fake_dataset(tmp_path, n=8)  # 4 training sentences
+    _tiny_hf_model(tmp_path / "model", num_speakers=3)
+    calls = []
+
+    class CountingEncoder(_FakeEncoder):
+        def embed(self, audio_16k):
+            calls.append(1)
+            return super().embed(audio_16k)
+
+    monkeypatch.setattr(rank_speakers, "SpeakerEncoder", CountingEncoder)
+    argv = ["--model", str(tmp_path / "model"), "--manifest", str(split_dir / "train_manifest.csv"),
+            "--data_root", str(data_root), "--device", "cpu", "--n_boot", "20", "--f0_utts", "1",
+            "--mcd_utts", "1", "--out_dir", str(tmp_path / "out")]
+    rank_speakers.main(argv + ["--n_utts", "2"])
+    calls.clear()
+    extended = rank_speakers.main(argv + ["--n_utts", "3", "--resume"])
+    assert len(calls) == 1 + 3  # only the new sentence: its real clip + 3 speakers
+    assert extended["summary"]["n_utts"] == 3 and extended["table"]["n_utts"].eq(3).all()
 
 
 @needs_transformers

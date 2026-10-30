@@ -124,6 +124,52 @@ def rank_speakers(paired: np.ndarray, speaker_ids: Sequence[int], eligible: Opti
     return table
 
 
+def _mean_pairwise_cosine(unit_vectors: np.ndarray) -> np.ndarray:
+    """Mean cosine over all pairs i < j along axis -2, using sum_{i!=j} u_i.u_j = |sum u|^2 - n."""
+    n = unit_vectors.shape[-2]
+    if n < 2:
+        return np.full(unit_vectors.shape[:-2], np.nan)
+    total = unit_vectors.sum(axis=-2)
+    return (np.sum(total * total, axis=-1) - n) / (n * (n - 1))
+
+
+def similarity_baselines(synth_emb: np.ndarray, real_emb: np.ndarray,
+                         eligible: Optional[Sequence[bool]] = None) -> Dict[str, float]:
+    """Reference points that give the speaker scores a scale.
+
+    real_vs_real                  LJSpeech vs LJSpeech, different sentences: the same-speaker ceiling
+    same_synthetic_speaker        one VCTK voice vs itself, different sentences: how consistent a voice is
+    different_synthetic_speakers  two VCTK voices, same sentence: the level of "different speakers"
+    """
+    synth = _unit(synth_emb)
+    if eligible is not None:
+        synth = synth[np.asarray(eligible, bool)]
+    real = _unit(real_emb)
+    return {"real_vs_real": float(_mean_pairwise_cosine(real)),
+            "same_synthetic_speaker": float(np.mean(_mean_pairwise_cosine(synth))),
+            "different_synthetic_speakers": float(np.mean(_mean_pairwise_cosine(np.swapaxes(synth, 0, 1))))}
+
+
+def pitch_groups(table: pd.DataFrame, threshold_hz: float = 160.0) -> Dict[str, object]:
+    """Splits the ranked speakers at ``threshold_hz`` median pitch (adult male voices mostly sit
+    below it, female voices above) and gives the closest / furthest speaker within each group.
+    The groups are inferred from the synthetic audio, not from VCTK metadata."""
+    ranked = table[table["eligible"] & table["f0_median_hz"].notna()]
+    groups: Dict[str, object] = {"threshold_hz": float(threshold_hz)}
+    for name, members in (("low", ranked[ranked["f0_median_hz"] < threshold_hz]),
+                          ("high", ranked[ranked["f0_median_hz"] >= threshold_hz])):
+        members = members.sort_values("similarity", ascending=False)
+        if members.empty:
+            groups[name] = {"n": 0}
+            continue
+        groups[name] = {"n": int(len(members)), "mean_similarity": float(members["similarity"].mean()),
+                        "closest": int(members.iloc[0]["speaker_index"]),
+                        "closest_similarity": float(members.iloc[0]["similarity"]),
+                        "furthest": int(members.iloc[-1]["speaker_index"]),
+                        "furthest_similarity": float(members.iloc[-1]["similarity"])}
+    return groups
+
+
 def split_half_reliability(paired: np.ndarray, eligible: Optional[Sequence[bool]] = None) -> Dict[str, float]:
     """Spearman correlation of speaker scores from odd vs even sentences (+ Spearman-Brown for all N).
 
