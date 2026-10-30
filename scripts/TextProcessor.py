@@ -1,9 +1,31 @@
 import re
+import logging
 
 from typing import List, Union
 
 import torch
 import unicodedata
+
+
+class _WordMismatchFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (
+            record.levelno == logging.WARNING
+            and record.getMessage().startswith("words count mismatch on ")
+        )
+
+
+_word_mismatch_filter = _WordMismatchFilter()
+
+
+def configure_word_mismatch_warnings(suppress: bool) -> None:
+    """Configure only Phonemizer's word-count warnings in the current process."""
+    logger = logging.getLogger("phonemizer")
+    if suppress:
+        logger.addFilter(_word_mismatch_filter)
+    else:
+        logger.removeFilter(_word_mismatch_filter)
+
 
 # 178 symbol vocabulary from the official VITS implementation (jaywalnut310/vits text/symbols.py)
 # Ensures input embedding compatibility with pretrained VCTK VITS checkpoints
@@ -34,7 +56,16 @@ def clean_normalised_text(text: str, lowercase: bool = True) -> str:
     return text
 
 class TextProcessor:
-    """Converts normalised text to IPA phonemes using espeak. Intersperses blank tokens for VITS Monotonic Alignment Search."""
+    """
+    Converts normalised text to IPA phonemes using espeak. 
+    Intersperses blank tokens for VITS Monotonic Alignment Search.
+
+    NOTE:
+    The checkpoint already comes with its own tokenization and symbol set, so we'll just 
+    use that instead.
+    
+    
+    """
     def __init__(self, add_blank: bool = True): # Can built for a possible investigation into the affects for the blank interspered tokens (Can remove)
         self.add_blank = add_blank
         self.symbols = VITS_SYMBOLS
