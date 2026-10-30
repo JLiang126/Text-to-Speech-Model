@@ -3,23 +3,24 @@
 
 Run from the repo root:
 
-  # one sentence
-  python scripts/synth.py --text "Hello world." --config configs/expA.json \
-      --checkpoint checkpoints/expA/G_latest.pth --speaker_id <ID> --out wav_examples/hello.wav
+  # one sentence (Hugging Face format: a finetune-hf-vits output folder or a hub id)
+  python scripts/synth.py --text "Hello world." --model runs/expA --speaker_id <ID> --out wav_examples/hello.wav
 
   # the 12 fixed qualitative prompts -> wav_examples/expA_01.wav ... expA_12.wav (+ expA_prompts.json)
-  python scripts/synth.py --prompts --exp expA --config configs/expA.json \
-      --checkpoint checkpoints/expA/G_latest.pth --speaker_id <ID> --out_dir wav_examples
+  python scripts/synth.py --prompts --exp expA --model runs/expA --speaker_id <ID> --out_dir wav_examples
+
+  # official VITS format instead of --model
+  python scripts/synth.py --text "Hello world." --config configs/expA.json \
+      --checkpoint checkpoints/expA/G_latest.pth --speaker_id <ID>
 
 --speaker_id is only for multi-speaker checkpoints (e.g. the VCTK-pretrained model); use the ID
 the LJSpeech clips were fine-tuned with. Digits, money, % and & are spelled out before phonemisation.
-The VITS code folder defaults to $VITS_DIR or ./vits-main.
+The official VITS code folder defaults to $VITS_DIR or ./vits-main.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -30,7 +31,7 @@ if str(REPO_ROOT) not in sys.path:  # lets `python scripts/synth.py` import the 
 from scripts.evaluation.audio import save_wav  # noqa: E402
 from scripts.evaluation.prompts import PROMPTS  # noqa: E402
 from scripts.evaluation.synthesizer import (LENGTH_SCALE, NOISE_SCALE, NOISE_SCALE_W,  # noqa: E402
-                                            VITSSynthesizer)
+                                            add_model_arguments, model_given, synthesizer_from_args)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,12 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     what = p.add_mutually_exclusive_group(required=True)
     what.add_argument("--text", help="sentence to synthesise")
     what.add_argument("--prompts", action="store_true", help="synthesise the 12 fixed qualitative prompts")
-    p.add_argument("--config", required=True, help="VITS JSON config used for training")
-    p.add_argument("--checkpoint", required=True, help="generator checkpoint (G_*.pth)")
-    p.add_argument("--vits_dir", default=os.environ.get("VITS_DIR", "vits-main"), help="official VITS code folder")
-    p.add_argument("--speaker_id", type=int, default=None, help="speaker ID (multi-speaker checkpoints only)")
-    p.add_argument("--frontend", choices=["repo", "vits"], default="repo",
-                   help="repo = scripts/TextProcessor.py (same as training); vits = official text module")
+    add_model_arguments(p)
     p.add_argument("--device", default="auto", help="auto | cpu | cuda | cuda:0 ...")
     p.add_argument("--seed", type=int, default=1234, help="sampling seed (same seed -> same audio)")
     p.add_argument("--noise_scale", type=float, default=NOISE_SCALE)
@@ -64,10 +60,10 @@ def resolve_device(requested: str) -> str:
 
 def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
-    synth = VITSSynthesizer(args.config, args.checkpoint, vits_dir=args.vits_dir,
-                            device=resolve_device(args.device), speaker_id=args.speaker_id,
-                            frontend=args.frontend, noise_scale=args.noise_scale,
-                            noise_scale_w=args.noise_scale_w, length_scale=args.length_scale)
+    if not model_given(args):
+        raise SystemExit("Pass --model, or --config and --checkpoint.")
+    synth = synthesizer_from_args(args, resolve_device(args.device), noise_scale=args.noise_scale,
+                                  noise_scale_w=args.noise_scale_w, length_scale=args.length_scale)
     if args.text is not None:
         audio, info = synth.synthesize(args.text, seed=args.seed)
         path = save_wav(args.out, audio, synth.sample_rate)
@@ -83,7 +79,7 @@ def main(argv=None) -> None:
         index.append({"file": path.name, "category": category, "text": text,
                       "spoken_text": synth.prepare_text(text)})  # after numbers are spelled out
         print(f"{path.name}  [{category}]  {text}")
-    meta = {"experiment": args.exp, "checkpoint": args.checkpoint, "seed": args.seed,
+    meta = {"experiment": args.exp, "checkpoint": args.checkpoint or args.model, "seed": args.seed,
             "speaker_id": args.speaker_id, "prompts": index}
     (out_dir / f"{args.exp}_prompts.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 

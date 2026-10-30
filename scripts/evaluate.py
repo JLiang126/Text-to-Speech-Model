@@ -8,8 +8,12 @@ which is the ceiling every metric is read against).
 Run from the repo root:
 
   python scripts/evaluate.py --exp ground_truth --ground_truth
-  python scripts/evaluate.py --exp pretrained --config vits-main/configs/vctk_base.json \
-      --checkpoint checkpoints/pretrained_vctk.pth --speaker_id <ID>
+  # Hugging Face format (finetune-hf-vits): pretrained floor, finished run, intermediate checkpoint
+  python scripts/evaluate.py --exp pretrained --model ylacombe/vits-vctk-with-discriminator --speaker_id <ID>
+  python scripts/evaluate.py --exp expA --model runs/expA --speaker_id <ID>
+  python scripts/evaluate.py --exp expA --model runs/expA/checkpoint-2000 --speaker_id <ID> \
+      --out_dir results/expA_step2000
+  # official VITS format
   python scripts/evaluate.py --exp expA --config configs/expA.json \
       --checkpoint checkpoints/expA/G_10000.pth --speaker_id <ID> --out_dir results/expA_step10000
   # CPU timing for the same system (adds latency_cpu.json, leaves the other results alone)
@@ -35,8 +39,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 import sys
 from importlib import metadata
 from pathlib import Path
@@ -57,7 +59,8 @@ from scripts.evaluation.metrics import (ASR_SR, SpeakerEncoder, UTMOSPredictor, 
 from scripts.evaluation.prompts import prompt_texts  # noqa: E402
 from scripts.evaluation.speakers import reference_centroid  # noqa: E402
 from scripts.evaluation.stats import bootstrap_ci, bootstrap_ratio_ci  # noqa: E402
-from scripts.evaluation.synthesizer import VITSSynthesizer, seed_for  # noqa: E402
+from scripts.evaluation.synthesizer import (add_model_arguments, checkpoint_step, model_given,  # noqa: E402
+                                            seed_for, synthesizer_from_args)
 from scripts.evaluation.timing import (describe_device, device_tag, measure_latency,  # noqa: E402
                                        summarise_latency)
 
@@ -70,14 +73,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--exp", required=True, help="system name, e.g. expA (also the default output folder)")
     p.add_argument("--ground_truth", action="store_true", help="score the real recordings (the ceiling)")
-    p.add_argument("--config", help="VITS JSON config the checkpoint was trained with")
-    p.add_argument("--checkpoint", help="generator checkpoint G_*.pth")
-    p.add_argument("--step", type=int, default=None, help="training step (default: parsed from G_<step>.pth)")
-    p.add_argument("--vits_dir", default=os.environ.get("VITS_DIR", "vits-main"),
-                   help="official VITS code folder (default: $VITS_DIR or ./vits-main)")
-    p.add_argument("--speaker_id", type=int, default=None, help="speaker ID, multi-speaker checkpoints only")
-    p.add_argument("--frontend", choices=["repo", "vits"], default="repo",
-                   help="repo = scripts/TextProcessor.py (same as training); vits = official text module")
+    add_model_arguments(p)
+    p.add_argument("--step", type=int, default=None,
+                   help="training step (default: parsed from G_<step>.pth or checkpoint-<step>)")
     p.add_argument("--manifest", default="dataset/splits/test_manifest.csv", help="test split manifest")
     p.add_argument("--ref_manifest", default=None,
                    help="real clips for the speaker reference (default: train_manifest.csv beside --manifest)")
@@ -146,7 +144,7 @@ def corpus_rates(per_utt: pd.DataFrame, seed: int) -> Dict[str, Dict[str, float]
     return rates
 
 
-def score_test_set(args, test: pd.DataFrame, synth: Optional[VITSSynthesizer], metrics: set,
+def score_test_set(args, test: pd.DataFrame, synth: Optional[object], metrics: set,
                    device: str, out_dir: Path, failures: Dict[str, str]) -> pd.DataFrame:
     """Synthesises (or loads) every test sentence and computes the per-sentence metrics."""
     asr = try_load("wer", lambda: WhisperASR(args.whisper_model, device), failures) if "wer" in metrics else None
@@ -205,8 +203,8 @@ def main(argv=None) -> Dict[str, object]:
     unknown = metrics - set(ALL_METRICS)
     if unknown:
         raise SystemExit(f"Unknown metrics {sorted(unknown)}; choose from {ALL_METRICS}")
-    if not args.ground_truth and not (args.config and args.checkpoint):
-        raise SystemExit("Checkpoint systems need --config and --checkpoint (or use --ground_truth).")
+    if not args.ground_truth and not model_given(args):
+        raise SystemExit("Checkpoint systems need --model, or --config and --checkpoint (or use --ground_truth).")
     if args.ground_truth and metrics == {"rtf"}:
         raise SystemExit("Ground truth has no synthesis to time; drop --metrics rtf.")
 
@@ -220,16 +218,12 @@ def main(argv=None) -> Dict[str, object]:
 
     synth = None
     if not args.ground_truth:
-        synth = VITSSynthesizer(args.config, args.checkpoint, vits_dir=args.vits_dir, device=device,
-                                speaker_id=args.speaker_id, frontend=args.frontend)
+        synth = synthesizer_from_args(args, device)
 
     need_test_set = bool(metrics & PER_UTTERANCE_METRICS) or ("rtf" in metrics and args.rtf_texts == "test")
     test = load_manifest(args.manifest, args.data_root, args.limit) if need_test_set else None
     failures: Dict[str, str] = {}
-    step = args.step
-    if step is None and args.checkpoint:
-        match = re.search(r"_(\d+)\.pth$", str(args.checkpoint))
-        step = int(match.group(1)) if match else None
+    step = args.step if args.step is not None else checkpoint_step(args.checkpoint or args.model)
 
     latency = None
     if "rtf" in metrics and synth is not None:
@@ -253,11 +247,12 @@ def main(argv=None) -> Dict[str, object]:
     per_utt.to_csv(out_dir / "per_utterance.csv", index=False)
     summary = {
         "experiment": args.exp, "ground_truth": bool(args.ground_truth), "step": step,
-        "checkpoint": args.checkpoint, "config": args.config, "speaker_id": args.speaker_id,
+        "checkpoint": args.checkpoint or args.model, "config": args.config, "speaker_id": args.speaker_id,
         "manifest": str(args.manifest), "n_utterances": int(len(per_utt)),
         "metrics": summarise(per_utt, args.seed), "corpus": corpus_rates(per_utt, args.seed),
         "latency": {tag: latency} if latency else {}, "device": describe_device(device),
-        "settings": {"seed": args.seed, "frontend": args.frontend, "whisper_model": args.whisper_model,
+        "settings": {"seed": args.seed, "frontend": synth.frontend if synth else None,
+                     "whisper_model": args.whisper_model,
                      "n_ref_clips": args.n_ref, "peak": EVAL_PEAK, "trim_db": EVAL_TRIM_DB,
                      "noise_scale": synth.noise_scale if synth else None,
                      "noise_scale_w": synth.noise_scale_w if synth else None,
