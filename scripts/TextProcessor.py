@@ -29,7 +29,7 @@ def clean_normalised_text(text: str, lowercase: bool = True) -> str:
     if lowercase: text = text.lower()
 
     text = re.sub(r"[;:—–]+", ",", text)
-    text = re.sub(r"[^a-zA-Z\s\.,!\?'-]", "", text)
+    text = re.sub(r"[^a-zA-Z\s\.,!\?'-]", "", text) # characters which are outside this group are stripped
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -66,7 +66,7 @@ class TextProcessor:
         return ipa_phonemes[0] if ipa_phonemes else ""
 
     def text_to_sequence(self, text: str, is_cleaned: bool = False) -> torch.LongTensor:
-        """Converts text into a 1D LongTensor of VITS IPA token IDs."""
+        """Converts text into a 1D  of VITS IPA token IDs."""
         clean_text = text if is_cleaned else clean_normalised_text(text, lowercase=True)
         ipa_str = self.phonemize_text(clean_text)
 

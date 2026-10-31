@@ -15,15 +15,15 @@ class DataConfig:
     subset_size: int = 3000 # Set to None for full dataset
 
     # Test Preprocessing
-    lowercase: bool = True
-    add_blank: bool = True
+    lowercase: bool = True # Added for visibility and for potential encoding testing
+    add_blank: bool = True # Added for visibility and for potential encoding testing
 
     # Audio Preprocessing
     target_sr: int = 22050 # Native LJSpeech sample rate (Hz)
     min_duration_sec: float = 1.0
     max_duration_sec: float = 10.0
     trim_db: float = 40.0
-    pad_tail: int = 0.05
+    pad_tail: float = 0.05
 
     # Short Form Fourier Transform Configuration
     n_fft: int = 1024
