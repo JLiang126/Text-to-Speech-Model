@@ -24,7 +24,7 @@ class DataConfig:
     persistent_workers: bool = False
 
     # Test Preprocessing
-    lowercase: bool = True
+    lowercase: bool = True # Legacy cleaner only; simple training cleaning preserves case.
     add_blank: bool = True
     suppress_word_mismatch_warnings: bool = False
     preprocess_token_ids: bool = False

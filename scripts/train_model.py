@@ -48,7 +48,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "finetune-hf-vits-main"))
 
 from scripts.DataConfig import DataConfig
 from scripts.DataLoader import build_dataloaders
-from scripts.TextProcessor import configure_word_mismatch_warnings
+from scripts.TextProcessor import configure_word_mismatch_warnings, load_vctk_tokenizer
 from scripts.AudioProcessor import AudioProcessor
 from scripts.monotonic_alignment import MonotonicAlignment
 from scripts.model import VitsDiscriminator, VitsModel, VitsModelForPreTraining, slice_segments
@@ -568,7 +568,11 @@ def main():
     # -------- 1. Load a pretrained generator and discriminator. ----------
     # Load the model and tokenizer together so dataset token IDs and model
     # embeddings come from the same pretrained checkpoint.
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name_or_path)
+    # tokenizer = AutoTokenizer.from_pretrained(cfg.model_name_or_path)
+
+    # use this version to fix a token collision issue with the "unknown" token
+    tokenizer = load_vctk_tokenizer(cfg.model_name_or_path)
+
     model, loading_info = VitsModelForPreTraining.from_pretrained(
         cfg.model_name_or_path, output_loading_info=True
     )

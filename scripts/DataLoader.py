@@ -1,3 +1,49 @@
+"""LJSpeech splitting and checkpoint-aware dataset loading.
+
+Text preprocessing has two stages. During split generation,
+clean_normalised_text_simple applies NFKC normalization, replaces brackets with
+comma pauses attached to the preceding word, and collapses whitespace. Leading
+brackets add no comma and existing adjacent punctuation is not duplicated.
+Unicode letters, case, digits, and other punctuation are preserved. The result
+is stored as clean_text in the manifest. Token IDs are generated from that field
+using the checkpoint tokeniser and then cached in dataset memory.
+
+What the VITS checkpoint tokeniser is doing:
+
+With the current VCTK checkpoint defaults (normalize=True, phonemize=True,
+add_blank=True), its preprocessing is:
+
+1. Vocabulary-aware case normalization: recognized vocabulary characters and
+   tokens are preserved; other characters are lowercased. The VCTK vocabulary
+   contains both uppercase and lowercase letters, so this is not blanket
+   lowercasing.
+2. Phonemization through Phonemizer's eSpeak backend, using US English (en-us),
+   IPA pronunciation with stress markers, punctuation preservation, and
+   trimming of surrounding phonemizer whitespace.
+3. Whitespace normalization: repeated whitespace in the phoneme output becomes
+   a single space.
+4. Character-level tokenization: the phoneme string is split into individual
+   characters and mapped to vocabulary IDs. Unknown characters map to <unk>.
+   Transcripts containing unknown IDs raise an error before caching or use.
+5. Blank insertion: token ID 0 is inserted between characters and at both ends.
+   Training overrides add_blank with the corresponding DataConfig setting.
+
+The checkpoint tokeniser does not call local TextProcessor functions; transcript
+cleaning is a separate stage in this pipeline. The older clean_normalised_text
+function remains available, but its ASCII stripping, lowercasing, punctuation
+rewriting, and digit/character filtering are no longer used in training.
+
+The local TextProcessor phonemization and token-conversion methods are only
+used as a fallback when no checkpoint tokeniser is supplied; unmapped phoneme
+characters raise an error rather than being discarded. The local word-mismatch
+warning filter is also used, but affects logging, not token IDs.
+
+Summary:
+Normalised transcript → simple cleaner → vocabulary-aware case normalization → 
+phonemisation → whitespace cleanup → character IDs and blanks → unknown-token guard.
+
+"""
+
 import os
 import wave
 import random
@@ -13,7 +59,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader, Subset
 
 from scripts.DataConfig import DataConfig
-from scripts.TextProcessor import TextProcessor, clean_normalised_text, configure_word_mismatch_warnings
+from scripts.TextProcessor import TextProcessor, clean_normalised_text_simple, configure_word_mismatch_warnings
 from scripts.AudioProcessor import AudioProcessor
 
 def set_global_seed(seed: int = 42) -> None:
@@ -45,7 +91,10 @@ def save_word_mismatch_report(
     split_source: Union[pd.DataFrame, str, Path],
     output_path: Union[str, Path],
 ) -> Path:
-    """Save only transcripts that trigger eSpeak word-count mismatch warnings.
+    """
+    Note: this function has been written by AI.
+    
+    Save only transcripts that trigger eSpeak word-count mismatch warnings.
 
     Accepts a split manifest or DataFrame with a clean_text column. Uses the
     English VITS phonemization settings and preserves every source column,
@@ -137,7 +186,7 @@ def build_splits(
                         num_channels = wf.getnchannels()
                         num_frames = wf.getnframes()
                     duration_sec = num_frames / float(sample_rate)
-                    clean_text = clean_normalised_text(norm_text, lowercase=cfg.lowercase)
+                    clean_text = clean_normalised_text_simple(norm_text)
                     rel_wav_path = os.path.relpath(wav_path, start=Path.cwd())
                     records.append({
                         "utt_id": utt_id,
@@ -262,6 +311,15 @@ class LJSpeechDataset(Dataset):
                 token_ids = self.text_processor.text_to_sequence(row["clean_text"], is_cleaned=True)
             else:
                 ids = self.tokenizer(row["clean_text"])["input_ids"]
+                unknown_id = self.tokenizer.unk_token_id
+                if unknown_id is not None:
+                    unknown_count = ids.count(unknown_id)
+                    if unknown_count:
+                        raise ValueError(
+                            f"Unknown tokens ({unknown_count} occurrences of "
+                            f"{self.tokenizer.unk_token!r}, ID {unknown_id}) "
+                            f"in transcript {row['utt_id']!r}: {row['clean_text']!r}"
+                        )
                 if not ids:
                     raise ValueError(f"Transcript produced no tokens: {row['clean_text']!r}")
                 token_ids = torch.tensor(ids, dtype=torch.long)
