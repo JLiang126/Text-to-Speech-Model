@@ -60,8 +60,9 @@ class DataConfig:
     warmup_ratio: float = 0.01
     mixed_precision: str = "no"
     encoder_layerdrop: float = 0.0 # Dropout rate for encoder layers. It's 0.1 by default in the original VITS configuration, but 0 works much better here
-    freeze_text_encoder: bool = False # Whether to freeze the text encoder during training.
+    freeze_mode: str = "none" # Options: none, freeze_text_encoder, unfreeze_speech_embeddings_only
     save_final_discriminator: bool = False # whether to include the discriminator in the final checkpoint
+    speaker_embedding_lr_ratio: float = 1.0
 
     # evaluation configuration
     do_eval: bool = True
@@ -86,6 +87,10 @@ class DataConfig:
             if self.output_split_dir is None
             else Path(self.output_split_dir)
         )
+
+        # Ensure freeze_mode is valid
+        if self.freeze_mode not in ["none", "freeze_text_encoder", "unfreeze_speech_embeddings_only"]:
+            raise ValueError(f"Invalid freeze_mode: {self.freeze_mode}. Must be one of 'none', 'freeze_text_encoder', 'unfreeze_speech_embeddings_only'.")
 
     def to_dict(self) -> Dict:
         d = asdict(self)

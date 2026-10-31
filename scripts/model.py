@@ -33,7 +33,7 @@ from transformers.modeling_outputs import (
 )
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import add_start_docstrings, add_start_docstrings_to_model_forward, logging, replace_return_docstrings
-from configuration_vits import VitsConfig
+from scripts.configuration_vits import VitsConfig
 
 
 
@@ -1963,6 +1963,10 @@ class VitsEncoder(nn.Module):
         # expand attention_mask
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+            # note: this originally used _prepare_4d_attention_mask from transformers.modeling_attn_mask_utils
+            # however that is deprecated and will be removed in Transformers v5.10.
+            # AI was used to debug this deprecation warning (GPT Sol 6.1)
+            # original: attention_mask = _prepare_4d_attention_mask(attention_mask, hidden_states.dtype)
             attention_mask = eager_mask(
                 batch_size=hidden_states.shape[0],
                 q_length=hidden_states.shape[1],

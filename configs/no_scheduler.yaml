@@ -46,7 +46,8 @@ warmup_ratio: 0.02 # Fraction of total steps to use for linear warmup. Set to 0 
 mixed_precision: bf16 # Use bfloat16 mixed precision for training if supported by the hardware.
 use_linear_lr_schedule: false  # Set false to keep the learning rate constant.
 encoder_layerdrop: 0.0 # Dropout rate for encoder layers. It's 0.1 by default in the original VITS configuration, but 0 works much better here
-freeze_text_encoder: false # Whether to freeze the text encoder during training.
+freeze_mode: none # Options: none, freeze_text_encoder, unfreeze_speech_embeddings_only
+speaker_embedding_lr_ratio: 1.0
 
 # Evaluation
 do_eval: true

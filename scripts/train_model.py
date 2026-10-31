@@ -1,8 +1,8 @@
 """Fine-tune a VITS checkpoint on local LJSpeech data.
 
 Run from the repository root:
-    python -m scripts.train
-    accelerate launch scripts/train.py
+    python -m scripts.train_model
+    accelerate launch scripts/train_model.py
 
 The default settings are loaded from configs/train.yaml. --config can select
 another YAML object containing training settings. `--output-mode restart`
@@ -11,7 +11,7 @@ is `restart`. Run files are written under `<output_dir>/run`, while listening
 samples and intermediate checkpoints are written beside `run`.
 The loader's existing split manifests are reused only when their settings
 match. Training progress is reported in the console, with three fixed validation
-phrases synthesized per epoch and their text saved in listening_samples.json.
+phrases synthesized per epoch and their text and phonemes saved in listening_samples.json.
 """
 
 
@@ -30,7 +30,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 import yaml
-from accelerate import Accelerator
+from accelerate import Accelerator, DataLoaderConfiguration
 from accelerate.utils import set_seed
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
@@ -374,12 +374,20 @@ class save_sample_sounds_each_epoch:
                 source_index = source.indices[source_index]
                 source = source.dataset
             row = source.df.iloc[source_index]
+            input_ids = source._get_token_ids(source_index).tolist()
+            if source.tokenizer is not None:
+                phonemes = "".join(source.tokenizer.convert_ids_to_tokens(
+                    input_ids, skip_special_tokens=True,
+                ))
+            else:
+                phonemes = source.text_processor.sequence_to_text(input_ids)
             records.append({
                 "validation_index": index,
                 "utt_id": str(row["utt_id"]),
                 "text": str(row["norm_text"]),
                 "clean_text": str(row["clean_text"]),
-                "input_ids": source._get_token_ids(source_index).tolist(),
+                "phonemes": phonemes,
+                "input_ids": input_ids,
                 "seed": seed + position,
             })
         return records
@@ -403,7 +411,7 @@ class save_sample_sounds_each_epoch:
             "sampling_rate": self.sampling_rate,
             "filename_pattern": "epoch-{epoch}-sample-{sample}.wav",
             "prompts": self.prompts,
-        }, indent=2), encoding="utf-8")
+        }, indent=2, ensure_ascii=False), encoding="utf-8")
 
     @torch.no_grad()
     def save_epoch(self, model, epoch):
@@ -471,6 +479,7 @@ def main():
     accelerator = Accelerator(
         gradient_accumulation_steps=cfg.gradient_accumulation_steps,
         mixed_precision=cfg.mixed_precision, step_scheduler_with_optimizer=False,
+        dataloader_config=DataLoaderConfiguration(non_blocking=True)
     )
     set_seed(cfg.seed)
     # VITS uses monotonic alignment to match text tokens to audio frames.
@@ -490,10 +499,11 @@ def main():
     logging.info(f"Setting encoder layerdrop to {cfg.encoder_layerdrop}")
     model.config.layerdrop = cfg.encoder_layerdrop
     model.text_encoder.encoder.layerdrop = cfg.encoder_layerdrop
-    if cfg.freeze_text_encoder:
+    if cfg.freeze_mode == "freeze_text_encoder":
         logging.info("Freezing text encoder as per configuration.")
-        for param in model.text_encoder.parameters():
-            param.requires_grad = False
+        model.text_encoder.requires_grad_(False)
+
+
 
     # Fine-tuning requires the checkpoint's generator and discriminator weights
     # to load as expected; reject incomplete or incompatible checkpoints.
@@ -534,6 +544,26 @@ def main():
     # disable checkpointing for faster training if memory is not a constraint.
     if cfg.gradient_checkpointing:
         model.gradient_checkpointing_enable()
+
+
+    # WIP code. This freezes everything in the model EXCEPT for the speaker embedding.
+    # Could be useful to test whether the generator is already good at generating speech for a given speaker,
+    # and we just need to learn an embedding that represents the target speaker.
+    # In theory it may produce higher quality since the training is much more focused.
+    if cfg.freeze_mode == "unfreeze_speech_embeddings_only":
+
+        if not hasattr(model, "embed_speaker"):
+            raise ValueError("This checkpoint has no speaker embedding.")
+
+        model.requires_grad_(False)
+        model.embed_speaker.requires_grad_(True)
+        logging.info("Only the generator's speaker embedding is trainable.")
+
+        # freeze the discriminator as well, since we only want to train the speaker embedding
+        discriminator.requires_grad_(False)
+
+        # possibly unfreeze the duration predictor?
+        # model.duration_predictor.requires_grad_(True)
 
     # -------- 2. Load and prepare the dataset. ----------
     if args.output_mode == "restart" and accelerator.is_main_process:
@@ -580,9 +610,21 @@ def main():
     # the losses are weighted differently and so update sizes are likely different
     # the betas control the momentum terms for the AdamW optimizer. Higher beta values give more weight to past gradients.
     # beta1 smoothes past gradients, beta2 smoothes past squared gradients.
+    
+    # isolate parameters associated with the speaker embeddings
+    speaker_params = list(model.embed_speaker.parameters())
+    speaker_param_ids = {id(p) for p in speaker_params}
+
+    # todo: set a different learning rate for speaker embedding parameters if needed
     gen_optimizer = torch.optim.AdamW(
-        model.parameters(), lr=cfg.learning_rate, betas=(cfg.adam_beta1, cfg.adam_beta2)
+        [
+            {"params": [p for p in model.parameters() if p.requires_grad and id(p) not in speaker_param_ids],},
+            {"params": speaker_params,"lr": cfg.learning_rate * cfg.speaker_embedding_lr_ratio},
+        ],
+        lr=cfg.learning_rate, betas=(cfg.adam_beta1, cfg.adam_beta2),
     )
+
+    train_discriminator = any(parameter.requires_grad for parameter in discriminator.parameters())
     disc_optimizer = torch.optim.AdamW(
         discriminator.parameters(), lr=cfg.learning_rate, betas=(cfg.adam_beta1, cfg.adam_beta2)
     )
@@ -601,7 +643,7 @@ def main():
     total_steps = cfg.num_train_epochs * updates_per_epoch
     # note: come back to this
     gen_scheduler = make_scheduler(gen_optimizer, cfg, total_steps)
-    disc_scheduler = make_scheduler(disc_optimizer, cfg, total_steps)
+    disc_scheduler = make_scheduler(disc_optimizer, cfg, total_steps) if train_discriminator else None
     if accelerator.is_main_process:
         if gen_scheduler is None:
             logger.info("Using a constant learning rate.")
@@ -685,12 +727,13 @@ def main():
                     raise FloatingPointError("Discriminator loss is not finite.")
                 # Scale the discriminator objective, then clip gradients after
                 # unscaling to prevent unstable updates.
-                accelerator.backward(cfg.weight_disc * disc_loss)
-                if accelerator.sync_gradients: # only unscale and clip when gradients are being synchronized
-                    accelerator.unscale_gradients(disc_optimizer)
-                    torch.nn.utils.clip_grad_norm_(discriminator.parameters(), 1.0) # clip discriminator gradients to prevent exploding gradients
-                disc_optimizer.step() # update discriminator parameters
-                disc_optimizer.zero_grad() # reset discriminator gradients
+                if train_discriminator:
+                    accelerator.backward(cfg.weight_disc * disc_loss)
+                    if accelerator.sync_gradients: # only unscale and clip when gradients are being synchronized
+                        accelerator.unscale_gradients(disc_optimizer)
+                        torch.nn.utils.clip_grad_norm_(discriminator.parameters(), 1.0) # clip discriminator gradients to prevent exploding gradients
+                    disc_optimizer.step() # update discriminator parameters
+                    disc_optimizer.zero_grad() # reset discriminator gradients
 
                 # Freeze discriminator weights while keeping gradients to generated audio.
                 # This lets the generator learn from discriminator feedback without
@@ -716,7 +759,7 @@ def main():
                 # Backpropagate through the discriminator into the generated
                 # waveform, then re-enable discriminator gradients for next batch.
                 accelerator.backward(gen_loss) # backpropagate generator loss
-                discriminator.requires_grad_(True) # re-enable discriminator gradients for next batch
+                discriminator.requires_grad_(train_discriminator)
                 if accelerator.sync_gradients:
                     accelerator.unscale_gradients(gen_optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # clip generator gradients to prevent exploding gradients
