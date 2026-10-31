@@ -20,10 +20,14 @@ import json
 import logging
 import math
 import os
+import random
 import shutil
 import sys
 import wave
+from copy import deepcopy
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator, Optional
 
 import numpy as np
 import pandas as pd
@@ -33,7 +37,7 @@ import yaml
 from accelerate import Accelerator, DataLoaderConfiguration
 from accelerate.utils import set_seed
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 import time
 
 # Support direct execution and the upstream configuration used by the local model.
@@ -47,7 +51,7 @@ from scripts.DataLoader import build_dataloaders
 from scripts.TextProcessor import configure_word_mismatch_warnings
 from scripts.AudioProcessor import AudioProcessor
 from scripts.monotonic_alignment import MonotonicAlignment
-from scripts.model import VitsModelForPreTraining, slice_segments
+from scripts.model import VitsDiscriminator, VitsModel, VitsModelForPreTraining, slice_segments
 
 from scripts.plots import (
     LOSS_NAMES,
@@ -297,31 +301,50 @@ def averaged_losses(totals):
     return {name: (totals[i] / totals[-1]).item() for i, name in enumerate(LOSS_NAMES)}
 
 
+@contextmanager
+def preserve_random_state(device: torch.device) -> Iterator[None]:
+    """Keep auxiliary work from advancing Python, NumPy, or CPU/CUDA RNGs."""
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    devices = []
+    if device.type == "cuda":
+        devices = [device.index if device.index is not None else torch.cuda.current_device()]
+    try:
+        with torch.random.fork_rng(devices=devices):
+            yield
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+
+
 @torch.no_grad()
 def evaluate(model, discriminator, loader, alignment, audio_processor, speaker_id, segment_frames, accelerator, cfg):
     """
     Do evaluation on the validation set and return averaged metrics.
     """
-    # Weight batch objectives by sample count across distributed workers.
-    model.eval()
-    discriminator.eval()
-    total = torch.zeros(len(LOSS_NAMES) + 1, device=accelerator.device)
-    for batch in loader:
-        inputs = prepare_batch(batch, speaker_id, segment_frames) # prepare the batch for model input
-        outputs = model(**inputs, monotonic_alignment_function=alignment, return_dict=True) # forward pass through the model
-        mel, latent = reconstruction_losses(outputs, batch, audio_processor, segment_frames) # compute reconstruction losses for mel and latent representations
-        target_audio = slice_segments(
-            batch["wav_padded"], outputs.ids_slice * cfg.hop_length, cfg.hop_length * segment_frames
-        )
-        real_scores, real_maps = discriminator(target_audio)
-        fake_scores, fake_maps = discriminator(outputs.waveform)
-        losses = generator_losses(outputs, real_maps, fake_maps, fake_scores, mel, latent, cfg)
-        losses["disc"] = discriminator_loss(real_scores, fake_scores)
-        accumulate_losses(total, losses, inputs["input_ids"].size(0), accelerator)
-    # Restore training mode for the next optimization step.
-    model.train()
-    discriminator.train()
-    return averaged_losses(total)
+    was_training = model.training
+    discriminator_was_training = discriminator.training
+    with preserve_random_state(accelerator.device):
+        try:
+            model.eval()
+            discriminator.eval()
+            total = torch.zeros(len(LOSS_NAMES) + 1, device=accelerator.device)
+            for batch in loader:
+                inputs = prepare_batch(batch, speaker_id, segment_frames)
+                outputs = model(**inputs, monotonic_alignment_function=alignment, return_dict=True)
+                mel, latent = reconstruction_losses(outputs, batch, audio_processor, segment_frames)
+                target_audio = slice_segments(
+                    batch["wav_padded"], outputs.ids_slice * cfg.hop_length, cfg.hop_length * segment_frames
+                )
+                real_scores, real_maps = discriminator(target_audio)
+                fake_scores, fake_maps = discriminator(outputs.waveform)
+                losses = generator_losses(outputs, real_maps, fake_maps, fake_scores, mel, latent, cfg)
+                losses["disc"] = discriminator_loss(real_scores, fake_scores)
+                accumulate_losses(total, losses, inputs["input_ids"].size(0), accelerator)
+            return averaged_losses(total)
+        finally:
+            model.train(was_training)
+            discriminator.train(discriminator_was_training)
 
 
 
@@ -437,12 +460,11 @@ class save_sample_sounds_each_epoch:
         was_training = model.training # Remember the model's training state to restore it later.
         model.eval()
         device = next(model.parameters()).device
-        devices = [device.index] if device.type == "cuda" else []
         try:
             for position, prompt in enumerate(self.prompts, start=1):
                 tokens = torch.tensor([prompt["input_ids"]], dtype=torch.long, device=device)
                 attention_mask = torch.ones_like(tokens, dtype=torch.bool)
-                with torch.random.fork_rng(devices=devices):
+                with preserve_random_state(device):
                     torch.random.default_generator.manual_seed(prompt["seed"])
                     if device.type == "cuda":
                         with torch.cuda.device(device):
@@ -484,6 +506,48 @@ def make_scheduler(optimizer, cfg, total_steps):
         return max(0.0, (total_steps - step) / max(1, total_steps - warmup_steps))
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, scale)
+
+
+@torch.no_grad()
+def save_inference_checkpoint(
+    model: VitsModelForPreTraining,
+    tokenizer: PreTrainedTokenizerBase,
+    output_dir: Path,
+    variant: str,
+    discriminator: Optional[VitsDiscriminator] = None,
+) -> None:
+    """Export a detached generator without changing its live training parameters.
+
+    Remove training-added normalization while retaining the native WaveNet
+    parametrizations expected by Transformers inference models.
+    """
+    # Reconstruct on CPU: legacy weight-norm tensors cannot be deep-copied.
+    # Preserve the training RNG while initializing the export-only modules.
+    with torch.random.fork_rng(devices=[]), torch.device("cpu"):
+        export_model = VitsModel(deepcopy(model.config)).to(dtype=model.dtype)
+        export_model.decoder.apply_weight_norm()
+        for flow in export_model.flow.flows:
+            torch.nn.utils.weight_norm(flow.conv_pre)
+            torch.nn.utils.weight_norm(flow.conv_post)
+        export_model.load_state_dict(model.state_dict(), strict=True)
+
+        export_model.decoder.remove_weight_norm()
+        for flow in export_model.flow.flows:
+            torch.nn.utils.remove_weight_norm(flow.conv_pre)
+            torch.nn.utils.remove_weight_norm(flow.conv_post)
+
+        if discriminator is not None:
+            export_discriminator = VitsDiscriminator(deepcopy(model.config)).to(
+                dtype=next(discriminator.parameters()).dtype,
+            )
+            export_discriminator.apply_weight_norm()
+            export_discriminator.load_state_dict(discriminator.state_dict(), strict=True)
+            export_discriminator.remove_weight_norm()
+            export_model.discriminator = export_discriminator
+
+        export_model.eval()
+        export_model.save_pretrained(output_dir, variant=variant)
+        tokenizer.save_pretrained(output_dir)
 
 
 def main():
@@ -832,7 +896,10 @@ def main():
             model_checkpoint_dir = (
                 cfg.output_dir.parent / "intermediate_checkpoints" 
             )
-            accelerator.unwrap_model(model).save_pretrained(model_checkpoint_dir, variant=f"Epoch_{epoch + 1}")
+            save_inference_checkpoint(
+                accelerator.unwrap_model(model), tokenizer, model_checkpoint_dir,
+                variant=f"Epoch_{epoch + 1}",
+            )
             logger.info("Saved model checkpoint to %s", model_checkpoint_dir)
         
         # Save the three fixed listening samples for this epoch.
@@ -874,18 +941,13 @@ def main():
             )
 
     if accelerator.is_main_process:
-        model = accelerator.unwrap_model(model) # Unwrap the model from the accelerator for final saving
-        discriminator = accelerator.unwrap_model(discriminator) # Unwrap the discriminator from the accelerator for final saving
         if cfg.save_final_discriminator:
             logger.info("Including the discriminator in the final checkpoint.")
-            model.discriminator = discriminator # re-attach the discriminator to the model for final saving
-        model.decoder.remove_weight_norm() # Remove weight normalization from the decoder
-        for flow in model.flow.flows:
-            torch.nn.utils.remove_weight_norm(flow.conv_pre) # Remove weight normalization from the flow's pre-conv layer
-            torch.nn.utils.remove_weight_norm(flow.conv_post) # Remove weight normalization from the flow's post-conv layer
-        for disc in discriminator.discriminators:
-            disc.remove_weight_norm() # Remove weight normalization from each discriminator
-        model.save_pretrained(cfg.output_dir, variant=args.config.stem) # Save the final model with the config name as its variant
+        save_inference_checkpoint(
+            accelerator.unwrap_model(model), tokenizer, cfg.output_dir,
+            variant=args.config.stem,
+            discriminator=accelerator.unwrap_model(discriminator) if cfg.save_final_discriminator else None,
+        )
         logger.info("Saved fine-tuned model to %s", cfg.output_dir)
     accelerator.wait_for_everyone() # Ensure all processes have finished saving before ending training
     accelerator.end_training() # End the training session and clean up resources. Huzzah!!

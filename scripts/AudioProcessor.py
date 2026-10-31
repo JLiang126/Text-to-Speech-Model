@@ -3,7 +3,7 @@ from typing import Dict, Tuple
 import torch
 import torchaudio
 
-from scripts.DataLoader import DataConfig
+from scripts.DataConfig import DataConfig
 
 class AudioProcessor:
     """
