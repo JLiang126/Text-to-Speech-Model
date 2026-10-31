@@ -8,7 +8,7 @@ split_ratios: [0.9, 0.05, 0.05]
 subset_size: null
 lowercase: true
 add_blank: true
-suppress_word_mismatch_warnings: false # Hide only phonemizer word-count mismatch warnings.
+suppress_word_mismatch_warnings: true # Hide only phonemizer word-count mismatch warnings.
 preprocess_token_ids: true # Cache tokens in memory before data-loader workers start.
 
 # Audio preprocessing
@@ -32,7 +32,7 @@ speaker_id: 0
 
 # Training
 # Base output folder; run files are stored in its fixed run/ subdirectory.
-output_dir: outputs/unfreeze_speech_embeddings_only2/
+output_dir: outputs/unfreeze_speech_embeddings_only_50xLR/
 num_train_epochs: 15
 num_workers: 4
 persistent_workers: true # Keep worker processes alive between epochs; ignored with zero workers.
@@ -47,7 +47,7 @@ mixed_precision: bf16 # Use bfloat16 mixed precision for training if supported b
 use_linear_lr_schedule: false  # Set false to keep the learning rate constant.
 encoder_layerdrop: 0.0 # Dropout rate for encoder layers. It's 0.1 by default in the original VITS configuration, but 0 works much better here
 freeze_mode: unfreeze_speech_embeddings_only # Options: none, freeze_text_encoder, unfreeze_speech_embeddings_only
-speaker_embedding_lr_ratio: 1.0
+speaker_embedding_lr_ratio: 50.0
 
 # Evaluation
 do_eval: true

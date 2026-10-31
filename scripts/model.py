@@ -2505,13 +2505,31 @@ class VitsModelForPreTraining(VitsPreTrainedModel):
         speaker_embedding_size: Optional[int] = None,
         pad_to_multiple_of: Optional[int] = 2,
     ):
-        """Resize speaker embeddings and update every component conditioned on their width.
+        """Resize the speaker table, preserving pretrained weights when its width is unchanged.
 
-        All conditional projections must change together; otherwise a resized
-        embedding would fail at the posterior, flow, duration, or decoder input.
+        Omitting ``speaker_embedding_size`` retains the current width for a
+        multi-speaker model. Existing rows and conditional projections are
+        preserved; only added rows are randomly initialized. Resize before creating
+        optimizers. Set ``pad_to_multiple_of=None`` for an exact speaker count.
+
+        Changing the width requires rebuilding all conditional projections.
         """
+        if new_num_speakers < 1:
+            raise ValueError("new_num_speakers must be positive.")
+        if pad_to_multiple_of is not None and pad_to_multiple_of < 1:
+            raise ValueError("pad_to_multiple_of must be positive or None.")
         if pad_to_multiple_of is not None:
             new_num_speakers = ((new_num_speakers + pad_to_multiple_of - 1) // pad_to_multiple_of) * pad_to_multiple_of
+
+        if self.config.num_speakers > 1 and (
+            speaker_embedding_size is None or speaker_embedding_size == self.embed_speaker.embedding_dim
+        ):
+            self.embed_speaker = self._get_resized_embeddings(
+                self.embed_speaker, new_num_speakers, mean_resizing=False
+            )
+            self.config.num_speakers = new_num_speakers
+            self.config.speaker_embedding_size = self.embed_speaker.embedding_dim
+            return
 
         # first, take care of embed_speaker
         if self.config.num_speakers <= 1:

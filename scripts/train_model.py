@@ -184,6 +184,22 @@ def load_data(cfg, tokenizer, num_workers):
     return loaders["train"], eval_loader, loaders["val"].dataset
 
 
+def configure_training_speaker(model, speaker_id):
+    """Select an existing speaker or add exactly the next available ID."""
+    if model.config.num_speakers <= 1:
+        return None
+    num_speakers = model.config.num_speakers
+    if not 0 <= speaker_id <= num_speakers:
+        raise ValueError(
+            f"speaker_id must be between 0 and {num_speakers - 1} for an existing speaker, "
+            f"or exactly {num_speakers} to add a new speaker; got {speaker_id}."
+        )
+    if speaker_id == num_speakers:
+        model.resize_speaker_embeddings(num_speakers + 1, pad_to_multiple_of=None)
+        logging.info("Added speaker ID %s with a randomly initialized embedding.", speaker_id)
+    return speaker_id
+
+
 def prepare_batch(batch, speaker_id, segment_frames):
     """Translate TTSCollate's padded tensors and lengths into model inputs."""
     text = batch["text_padded"]
@@ -514,10 +530,8 @@ def main():
         raise ValueError("DataConfig sample rate, hop length and FFT bins must match the checkpoint.")
     if tokenizer.pad_token_id != 0:
         raise ValueError("TTSCollate pads with zero; this checkpoint must use padding token ID zero.")
-    if model.config.num_speakers > 1 and not 0 <= cfg.speaker_id < model.config.num_speakers:
-        raise ValueError(f"speaker_id must be between 0 and {model.config.num_speakers - 1}.")
-    # Single-speaker checkpoints do not use a speaker embedding input.
-    speaker_id = cfg.speaker_id if model.config.num_speakers > 1 else None
+
+    speaker_id = configure_training_speaker(model, cfg.speaker_id)
     # The model slices latent/spectrogram sequences in frames, but audio crops in samples.
     segment_frames = model.segment_size
     segment_samples = model.config.segment_size
@@ -614,12 +628,20 @@ def main():
     # isolate parameters associated with the speaker embeddings
     speaker_params = list(model.embed_speaker.parameters())
     speaker_param_ids = {id(p) for p in speaker_params}
+    # set the weight decay to zero for speaker embeddings if only they are being unfrozen
+    # this is useful in that all the other speakers remain unchanged
+    # however, it removes the regularization effect of weight decay on the speaker embeddings
+    dynamic_embedding_weight_decay = False
+    if dynamic_embedding_weight_decay:
+        embedding_weight_decay = 0.0 if cfg.freeze_mode == "unfreeze_speech_embeddings_only" else 0.01
+    else:
+        embedding_weight_decay = 0.01
 
-    # todo: set a different learning rate for speaker embedding parameters if needed
+    # set a different learning rate for speaker embedding parameters if needed
     gen_optimizer = torch.optim.AdamW(
         [
             {"params": [p for p in model.parameters() if p.requires_grad and id(p) not in speaker_param_ids],},
-            {"params": speaker_params,"lr": cfg.learning_rate * cfg.speaker_embedding_lr_ratio},
+            {"params": speaker_params,"lr": cfg.learning_rate * cfg.speaker_embedding_lr_ratio, "weight_decay": embedding_weight_decay},
         ],
         lr=cfg.learning_rate, betas=(cfg.adam_beta1, cfg.adam_beta2),
     )
