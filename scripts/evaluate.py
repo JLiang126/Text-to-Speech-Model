@@ -34,6 +34,7 @@ Metrics (choose with --metrics, default all):
   secs  ECAPA speaker similarity to the LJSpeech voice (-1..1, higher is better)
   utmos predicted naturalness, about 1-5 (higher is better)
   rtf   latency and real-time factor on the 12 fixed prompts (lower is faster)
+Always recorded: median pitch (f0_hz) of each sentence, and of its real recording (f0_ref_hz).
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ from scripts.evaluation.metrics import (ASR_SR, SpeakerEncoder, UTMOSPredictor, 
                                         cosine_similarity, get_text_normaliser, mcd_dtw,
                                         word_char_errors)
 from scripts.evaluation.prompts import prompt_texts  # noqa: E402
-from scripts.evaluation.speakers import reference_centroid  # noqa: E402
+from scripts.evaluation.speakers import f0_median, reference_centroid  # noqa: E402
 from scripts.evaluation.stats import bootstrap_ci, bootstrap_ratio_ci  # noqa: E402
 from scripts.evaluation.synthesizer import (add_model_arguments, checkpoint_step, model_given,  # noqa: E402
                                             seed_for, synthesizer_from_args)
@@ -66,7 +67,7 @@ from scripts.evaluation.timing import (describe_device, device_tag, measure_late
 
 ALL_METRICS = ("mcd", "wer", "secs", "utmos", "rtf")
 PER_UTTERANCE_METRICS = {"mcd", "wer", "secs", "utmos"}
-SUMMARY_COLUMNS = ("mcd_dtw", "dur_ratio", "wer", "cer", "secs", "secs_paired", "utmos")
+SUMMARY_COLUMNS = ("mcd_dtw", "dur_ratio", "wer", "cer", "secs", "secs_paired", "utmos", "f0_hz")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -182,6 +183,9 @@ def score_test_set(args, test: pd.DataFrame, synth: Optional[object], metrics: s
         if "mcd" in metrics and synth is not None:
             record.update(mcd_dtw(resample(gt_p, gt_sr, sr), audio_p, sr))
         audio_16k = resample(audio_p, sr, ASR_SR)
+        record["f0_hz"] = f0_median(audio_16k, ASR_SR)  # median pitch: cheap, shows e.g. a voice still sounding male
+        if synth is not None:
+            record["f0_ref_hz"] = f0_median(resample(gt_p, gt_sr, ASR_SR), ASR_SR)
         if asr is not None:
             hypothesis = asr.transcribe(audio_16k)
             record["asr_text"] = hypothesis

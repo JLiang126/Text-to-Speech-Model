@@ -224,3 +224,7 @@ dataset/*
 checkpoints/
 pretrained_models/
 results/*/wavs/
+*.safetensors
+results/**/wavs/
+results/**/prompts/
+results/**/embeddings.npz

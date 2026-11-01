@@ -11,9 +11,23 @@ controlled change. Owner: Adi.
 | `scripts/synth.py` | Single "text -> .wav" entry point. `--prompts` writes the 12 fixed prompts to `wav_examples/<exp>_NN.wav` |
 | `scripts/evaluate.py` | Scores one system on the test split. Writes per-sentence metrics, a summary with 95% CIs, and latency/RTF |
 | `scripts/compare.py` | Combines several systems into the report table, paired significance tests and figures |
+| `scripts/evaluate_experiments.py` | Evaluates every experiment checkpoint in one resumable run and writes the report tables, figures and checks |
 | `scripts/rank_speakers.py` | Ranks the VCTK speakers by how close they sound to LJSpeech, with bootstrap uncertainty: picks the closest / median / furthest starting speaker for the speaker-similarity experiment |
 | `scripts/evaluation/` | The building blocks: `audio`, `manifest`, `metrics`, `timing`, `stats`, `synthesizer`, `text_normalise`, `speakers`, `prompts`, plus `vctk_speakers.csv` (speaker index -> VCTK ID) |
 | `tests/` | `python -m pytest tests -q`. Runs offline. The official-format tests need `VITS_DIR` to point at the VITS code |
+
+## Evaluating every experiment in one go (`scripts/evaluate_experiments.py`)
+
+1. Put the checkpoints where `experiments/experiments.csv` says (default `checkpoints/model_<experiment>.safetensors`; git ignores them).
+2. Run `python scripts/evaluate_experiments.py` from the repo root. It:
+   - checks every checkpoint against the base model (`report/checks.csv`): the configured speaker row must be the one that trained, and frozen modules must be unchanged;
+   - scores each experiment, the real recordings (ceiling) and the pretrained model with each run's speaker index (floors `pretrained_spk<k>`), in the priority order of `experiments/report_plan.json`;
+   - times one system (all runs share the architecture) and synthesises the 12 prompts per system;
+   - writes `results/experiments/report/report.md` with the experiment table, the checks, an overview, one section per question (table, figure, paired tests) and a before-vs-after figure for the speaker runs.
+3. It resumes where it stopped: finished systems are skipped. `--limit 20` gives a quick preview; `--report_only` rebuilds the report from whatever has finished.
+4. **New checkpoints:** add a row to `experiments.csv` (speaker_id and settings; the `description` shows in the report) and add the name to a section of `report_plan.json`.
+
+Bare weight files (`model_*.safetensors`) carry no config or tokenizer; both come from `--base_model` (default `ylacombe/vits-vctk-with-discriminator`), which fine-tuning does not change.
 
 ## Two checkpoint formats
 
@@ -115,7 +129,7 @@ experiment changes only that index, so the choice of indices needs to be defensi
 6. **Is `--n_utts` enough?** `split_half_spearman` correlates the ranking from odd vs even sentences (Spearman-Brown corrects it to the full set). Near 1 means more sentences would not change the picks.
 
 Things to know before using the picks:
-- **Index 108 is excluded.** The official VCTK config allocates 109 embeddings, but the official training filelist only uses indices 0-107 (`vctk_speakers.csv`, 108 speakers). Index 108 was never trained, so it would rank as an outlier for the wrong reason. `--include_untrained` keeps it.
+- **Index 108 is excluded.** The official VCTK config allocates 109 embeddings, but the official training filelist only uses indices 0-107 (`vctk_speakers.csv`, 108 speakers). Index 108 was never trained, so its voice is an arbitrary mix rather than a VCTK speaker. In the first CPU run it scored mid-range (0.09), so the exclusion is about validity, not about its score. `--include_untrained` keeps it.
 - **Pitch/gender confound.** Pitch (largely gender) is the biggest difference between voices, so "closest vs furthest" can end up meaning "low- vs high-pitched", in either direction. In the first 5-sentence CPU run, the ECAPA-closest voices were low-pitched (about 115 Hz) and the furthest high-pitched (about 200 Hz), the opposite of the naive expectation for a female target. `summary.json` -> `pitch_groups` gives the closest and furthest voice *within* each pitch group (split at `--f0_threshold`, 160 Hz), which allows a design that separates "how similar" from "which pitch group".
 - **Reference levels** put the scores on a scale (`summary.json` -> `baselines`): LJSpeech vs LJSpeech on different sentences (the same-speaker ceiling), one VCTK voice vs itself, and two different VCTK voices on the same sentence.
 - **Second opinion:** `mcd_db` is the MCD-DTW of each voice against the real recording of the same sentence (first `--mcd_utts` sentences), a measure with no learned model. `agreement.ecapa_vs_mcd_spearman` near 1 means both measures rank the voices the same way; near 0 means the ranking depends on the measure, and only the listening check can arbitrate.

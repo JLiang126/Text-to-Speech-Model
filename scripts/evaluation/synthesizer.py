@@ -239,14 +239,22 @@ class VITSSynthesizer(_Synthesizer):
 
 
 # ------------------------------------------------------------ Hugging Face format
-def resolve_hf_model(model: PathLike) -> Tuple[Union[str, Path], Optional[Path]]:
-    """Where to read config/tokenizer from, and (for checkpoint-<step> folders) the weights file.
+DEFAULT_BASE_MODEL = "ylacombe/vits-vctk-with-discriminator"  # what the fine-tuning runs start from
+WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth")
+
+
+def resolve_hf_model(model: PathLike, base_model: PathLike = DEFAULT_BASE_MODEL
+                     ) -> Tuple[Union[str, Path], Optional[Path]]:
+    """Where to read config/tokenizer from, and (when they are separate) the weights file.
 
     - a folder with config.json (a finished finetune-hf-vits run, or any saved VitsModel)
       -> (folder, None)
     - a ``checkpoint-<step>`` folder written by ``accelerator.save_state`` during training:
       it holds only weights, so config/tokenizer come from the run folder above it
       -> (run folder, weights file)
+    - a bare weights file (e.g. model_no_droplayer.safetensors): fine-tuning keeps the
+      architecture and tokenizer, so config/tokenizer come from ``base_model``
+      -> (base_model, weights file)
     - anything else is treated as a Hugging Face hub id -> (id, None)
     """
     path = Path(model)
@@ -258,7 +266,11 @@ def resolve_hf_model(model: PathLike) -> Tuple[Union[str, Path], Optional[Path]]
         raise FileNotFoundError(f"{path} has no config.json, and it is not a checkpoint-<step> folder "
                                 f"inside a run folder that has one.")
     if path.is_file():
-        raise ValueError(f"--model must be a folder or a hub id, not a file: {path}")
+        if path.suffix not in WEIGHT_SUFFIXES:
+            raise ValueError(f"--model file must be a weights file ({', '.join(WEIGHT_SUFFIXES)}): {path}")
+        return base_model, path
+    if path.suffix in WEIGHT_SUFFIXES:
+        raise FileNotFoundError(f"weights file not found: {path}")
     return str(model), None
 
 
@@ -328,38 +340,47 @@ def _adapt_weight_norm(state: Dict[str, object], target_keys) -> Dict[str, objec
     return adapted
 
 
+def load_hf_vits(model: PathLike, base_model: PathLike = DEFAULT_BASE_MODEL, strict: bool = True):
+    """Any Hugging Face-format checkpoint (see resolve_hf_model) -> (VitsModel in eval mode, config source)."""
+    import transformers
+    from transformers import VitsConfig, VitsModel
+
+    source, weights = resolve_hf_model(model, base_model)
+    previous = transformers.logging.get_verbosity()
+    transformers.logging.set_verbosity_error()  # key mismatches are checked below instead
+    try:
+        if weights is None:
+            net, info = VitsModel.from_pretrained(str(source), output_loading_info=True)
+            missing = list(info.get("missing_keys", []))
+            unexpected = list(info.get("unexpected_keys", []))
+        else:
+            net = VitsModel(VitsConfig.from_pretrained(str(source)))
+            state = _adapt_weight_norm(_read_weights(weights), net.state_dict().keys())
+            result = net.load_state_dict(state, strict=False)
+            missing, unexpected = list(result.missing_keys), list(result.unexpected_keys)
+    finally:
+        transformers.logging.set_verbosity(previous)
+    unexpected = [k for k in unexpected if not k.startswith("discriminator.")]  # training-only part
+    if strict and (missing or unexpected):
+        raise RuntimeError(f"{model}: weights do not match VitsModel. Missing: {missing[:10]} "
+                           f"Unexpected: {unexpected[:10]}")
+    return net.eval(), source
+
+
 class HFVITSSynthesizer(_Synthesizer):
     """Loads a Hugging Face-format VITS model (transformers ``VitsModel``) for inference."""
 
     def __init__(self, model: PathLike, device: str = "cpu", speaker_id: Optional[int] = None,
                  noise_scale: float = NOISE_SCALE, noise_scale_w: float = NOISE_SCALE_W,
-                 length_scale: float = LENGTH_SCALE, expand_numbers: bool = True, strict: bool = True):
+                 length_scale: float = LENGTH_SCALE, expand_numbers: bool = True, strict: bool = True,
+                 base_model: PathLike = DEFAULT_BASE_MODEL):
         import torch
-        import transformers
-        from transformers import VitsConfig, VitsModel, VitsTokenizer
+        from transformers import VitsTokenizer
 
         logging.getLogger("phonemizer").setLevel(logging.ERROR)
         _use_bundled_espeak()  # the tokenizer phonemises with espeak-ng
-        source, weights = resolve_hf_model(model)
-        previous = transformers.logging.get_verbosity()
-        transformers.logging.set_verbosity_error()  # key mismatches are checked below instead
-        try:
-            self.tokenizer = VitsTokenizer.from_pretrained(str(source))
-            if weights is None:
-                net, info = VitsModel.from_pretrained(str(source), output_loading_info=True)
-                missing = list(info.get("missing_keys", []))
-                unexpected = list(info.get("unexpected_keys", []))
-            else:
-                net = VitsModel(VitsConfig.from_pretrained(str(source)))
-                state = _adapt_weight_norm(_read_weights(weights), net.state_dict().keys())
-                result = net.load_state_dict(state, strict=False)
-                missing, unexpected = list(result.missing_keys), list(result.unexpected_keys)
-        finally:
-            transformers.logging.set_verbosity(previous)
-        unexpected = [k for k in unexpected if not k.startswith("discriminator.")]  # training-only part
-        if strict and (missing or unexpected):
-            raise RuntimeError(f"{model}: weights do not match VitsModel. Missing: {missing[:10]} "
-                               f"Unexpected: {unexpected[:10]}")
+        net, source = load_hf_vits(model, base_model, strict)
+        self.tokenizer = VitsTokenizer.from_pretrained(str(source))
 
         self.model = net.to(device).eval()
         # VitsModel reads these attributes at inference (length = durations / speaking_rate)
@@ -406,13 +427,13 @@ class HFVITSSynthesizer(_Synthesizer):
 # ------------------------------------------------------------ one way in for every script
 def load_synthesizer(model: Optional[PathLike] = None, config: Optional[PathLike] = None,
                      checkpoint: Optional[PathLike] = None, vits_dir: PathLike = "vits-main",
-                     frontend: str = "repo", **kwargs) -> _Synthesizer:
+                     frontend: str = "repo", base_model: Optional[PathLike] = None, **kwargs) -> _Synthesizer:
     """``model`` -> Hugging Face format; ``config`` + ``checkpoint`` -> official VITS format."""
     if model and (config or checkpoint):
         raise ValueError("Give either --model (Hugging Face format) or --config/--checkpoint "
                          "(official VITS format), not both.")
     if model:
-        return HFVITSSynthesizer(model, **kwargs)
+        return HFVITSSynthesizer(model, base_model=base_model or DEFAULT_BASE_MODEL, **kwargs)
     if config and checkpoint:
         return VITSSynthesizer(config, checkpoint, vits_dir=vits_dir, frontend=frontend, **kwargs)
     raise ValueError("No model given: pass --model (Hugging Face format) or --config and "
@@ -423,7 +444,11 @@ def add_model_arguments(parser: argparse.ArgumentParser, with_speaker: bool = Tr
     """The model-selection options shared by synth.py, evaluate.py and rank_speakers.py."""
     g = parser.add_argument_group("model (give --model, or --config and --checkpoint)")
     g.add_argument("--model", help="Hugging Face-format VITS: a hub id (e.g. ylacombe/vits-vctk-with-discriminator), "
-                                   "a finetune-hf-vits output folder, or one of its checkpoint-<step> folders")
+                                   "a finetune-hf-vits output folder, one of its checkpoint-<step> folders, "
+                                   "or a bare weights file such as model_no_droplayer.safetensors")
+    g.add_argument("--base_model", default=DEFAULT_BASE_MODEL,
+                   help="where config and tokenizer come from when --model is a bare weights file "
+                        f"(default: {DEFAULT_BASE_MODEL})")
     g.add_argument("--config", help="official VITS format: JSON config the checkpoint was trained with")
     g.add_argument("--checkpoint", help="official VITS format: generator checkpoint G_<step>.pth")
     g.add_argument("--vits_dir", default=os.environ.get("VITS_DIR", "vits-main"),
@@ -445,4 +470,5 @@ def synthesizer_from_args(args: argparse.Namespace, device: str, **kwargs) -> _S
     """Builds the synthesizer chosen with the add_model_arguments options."""
     kwargs.setdefault("speaker_id", getattr(args, "speaker_id", None))
     return load_synthesizer(model=args.model, config=args.config, checkpoint=args.checkpoint,
-                            vits_dir=args.vits_dir, frontend=args.frontend, device=device, **kwargs)
+                            vits_dir=args.vits_dir, frontend=args.frontend, device=device,
+                            base_model=getattr(args, "base_model", None), **kwargs)

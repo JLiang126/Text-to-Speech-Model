@@ -36,7 +36,7 @@ from scripts.evaluation.stats import bootstrap_ratio_ci, holm_adjust, paired_com
 
 # metric -> True if lower is better. dur_dev = |duration ratio - 1| (speaking-rate error).
 PAIRED_METRICS = {"mcd_dtw": True, "wer": True, "cer": True, "secs": False, "secs_paired": False,
-                  "utmos": False, "dur_dev": True}
+                  "utmos": False, "dur_dev": True, "f0_dev": True}
 # (key, panel title, display scale, lower is better)
 QUALITY_PANELS = [
     ("mcd_dtw", "MCD-DTW (dB)", 1.0, True),
@@ -62,6 +62,8 @@ class System:
         self.per_utt = pd.read_csv(per_utt) if per_utt.is_file() else pd.DataFrame({"utt_id": []})
         if "dur_ratio" in self.per_utt.columns:
             self.per_utt["dur_dev"] = (self.per_utt["dur_ratio"] - 1.0).abs()
+        if {"f0_hz", "f0_ref_hz"} <= set(self.per_utt.columns):  # pitch error vs the real recording
+            self.per_utt["f0_dev"] = (self.per_utt["f0_hz"] - self.per_utt["f0_ref_hz"]).abs()
         self.latency: Dict[str, dict] = {}
         self.rtf_runs: Dict[str, pd.DataFrame] = {}
         for path in sorted(folder.glob("latency_*.json")):
@@ -73,7 +75,8 @@ class System:
         first_latency = next(iter(self.latency.values()), {})
         self.name = str(self.summary.get("experiment") or first_latency.get("experiment") or folder.name)
         self.step = self.summary.get("step", first_latency.get("step"))
-        self.is_reference = bool(self.summary.get("ground_truth")) or self.name in ("ground_truth", "pretrained")
+        self.is_reference = (bool(self.summary.get("ground_truth")) or self.name in ("ground_truth", "pretrained")
+                             or self.name.startswith("pretrained_"))
         self.label = self.name
 
     def value(self, key: str) -> Tuple[float, float, float]:
@@ -116,6 +119,7 @@ def results_table(systems: List[System]) -> pd.DataFrame:
             "Speaker sim.": fmt(*s.value("secs"), digits=3),
             "UTMOS": fmt(*s.value("utmos")),
             "Duration ratio": fmt(*s.value("dur_ratio")),
+            "Pitch (Hz)": fmt(*s.value("f0_hz"), digits=0),
         }
         for tag in tags:
             name = DEVICE_NAMES.get(tag, tag)

@@ -633,3 +633,142 @@ def test_evaluate_end_to_end_and_timing_only_run(tmp_path):
     before = (out / "summary.json").read_text()
     evaluate.main(common + ["--metrics", "rtf", "--cpu_threads", "1"])  # timing-only must not touch summary.json
     assert (out / "summary.json").read_text() == before
+
+
+# ------------------------------------------- bare weight files, checkpoint checks, batch driver
+def _save_weights(model, path):
+    from safetensors.torch import save_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_file({k: v.detach().contiguous() for k, v in model.state_dict().items()}, path)
+    return path
+
+
+def _fine_tuned(base, speaker, freeze=(), decay=0.9995, shift=0.3, seed=0):
+    """A stand-in for a fine-tuned run: every non-frozen module moves, the speaker table
+    shrinks a little everywhere (weight decay) and row `speaker` moves a lot."""
+    import copy
+    import torch
+
+    model = copy.deepcopy(base)
+    gen = torch.Generator().manual_seed(seed)
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            module = name.split(".", 1)[0]
+            if module in freeze:
+                continue
+            if module == "embed_speaker":
+                param.mul_(decay)
+                if speaker is not None:
+                    param[speaker] += shift
+            else:
+                param.add_(0.01 * param.abs().mean() * torch.randn(param.shape, generator=gen))
+    return model
+
+
+@needs_transformers
+def test_bare_weights_file_takes_config_and_tokenizer_from_the_base(tmp_path):
+    from scripts.evaluation.synthesizer import load_synthesizer, resolve_hf_model
+
+    base = _tiny_hf_model(tmp_path / "base")
+    weights = _save_weights(base, tmp_path / "checkpoints" / "model_run.safetensors")
+    assert resolve_hf_model(weights, tmp_path / "base") == (tmp_path / "base", weights)
+    from_file = load_synthesizer(model=weights, base_model=tmp_path / "base", speaker_id=1)
+    from_folder = load_synthesizer(model=tmp_path / "base", speaker_id=1)
+    a, _ = from_file.synthesize("Hello world.", seed=3)
+    b, _ = from_folder.synthesize("Hello world.", seed=3)
+    assert np.array_equal(a, b)
+    with pytest.raises(FileNotFoundError):
+        resolve_hf_model(tmp_path / "checkpoints" / "missing.safetensors")
+    (tmp_path / "notes.txt").write_text("x")
+    with pytest.raises(ValueError):
+        resolve_hf_model(tmp_path / "notes.txt")
+
+
+@needs_transformers
+def test_checkpoint_checks_find_the_trained_row_and_the_frozen_modules(tmp_path):
+    from scripts.evaluation.checkpoints import MODULES, check_experiment, state_of
+
+    base = _tiny_hf_model(tmp_path / "base", num_speakers=4)
+    reference = state_of(base)
+    full = check_experiment(state_of(_fine_tuned(base, 2)), reference, speaker_id=2, freeze_mode="none")
+    assert full["trained_row"] == 2 and full["speaker_ok"] and full["freeze_ok"]
+    assert full["unchanged_modules"] == "none" and full["change_decoder"] > 1e-3
+
+    frozen = check_experiment(state_of(_fine_tuned(base, 1, freeze=("text_encoder",))), reference,
+                              speaker_id=1, freeze_mode="freeze_text_encoder")
+    assert frozen["speaker_ok"] and frozen["freeze_ok"] and frozen["unchanged_modules"] == "text_encoder"
+
+    others = tuple(m for m in MODULES if m != "embed_speaker")
+    only = check_experiment(state_of(_fine_tuned(base, 3, freeze=others)), reference,
+                            speaker_id=3, freeze_mode="unfreeze_speech_embeddings_only")
+    assert only["speaker_ok"] and only["freeze_ok"]
+
+    # the index never reached the model: only weight decay, no row stands out
+    broken = check_experiment(state_of(_fine_tuned(base, None)), reference, speaker_id=2, freeze_mode="none")
+    assert not broken["speaker_ok"]
+    # a module that should be frozen but trained
+    leaky = check_experiment(state_of(_fine_tuned(base, 1)), reference, speaker_id=1,
+                             freeze_mode="freeze_text_encoder")
+    assert leaky["freeze_ok"] is False
+
+
+class _FakeASR:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def transcribe(self, audio_16k):
+        return "the clerk read sentence number one"
+
+
+class _FakeMOS:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def score(self, audio_16k):
+        return float(3.0 + min(float(np.std(audio_16k)), 1.0))
+
+
+@needs_transformers
+def test_evaluate_experiments_scores_resumes_and_reports(tmp_path, monkeypatch):
+    from scripts import evaluate, evaluate_experiments
+
+    data_root, split_dir = _fake_dataset(tmp_path, n=8)
+    base = _tiny_hf_model(tmp_path / "base", num_speakers=4)
+    ckpt = tmp_path / "checkpoints"
+    _save_weights(_fine_tuned(base, 0), ckpt / "model_default.safetensors")
+    _save_weights(_fine_tuned(base, 1, freeze=("text_encoder",), seed=1), ckpt / "model_frozen.safetensors")
+    experiments = tmp_path / "experiments.csv"
+    pd.DataFrame([
+        {"experiment": "default", "speaker_id": 0, "freeze_mode": "none", "checkpoint": str(ckpt / "model_default.safetensors")},
+        {"experiment": "frozen", "speaker_id": 1, "freeze_mode": "freeze_text_encoder",
+         "checkpoint": str(ckpt / "model_frozen.safetensors")},
+    ]).to_csv(experiments, index=False)
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"baseline": "default", "sections": [{
+        "name": "freezing", "title": "Freezing", "systems": ["ground_truth", "pretrained_spk0", "default", "frozen"],
+        "pairs": [["default", "frozen"]], "before_after": [["pretrained_spk0", "default"]]}]}))
+    for name, fake in (("WhisperASR", _FakeASR), ("SpeakerEncoder", _FakeEncoder), ("UTMOSPredictor", _FakeMOS)):
+        monkeypatch.setattr(evaluate, name, fake)
+    results = tmp_path / "results"
+    argv = ["--experiments", str(experiments), "--plan", str(plan), "--results_dir", str(results),
+            "--base_model", str(tmp_path / "base"), "--manifest", str(split_dir / "test_manifest.csv"),
+            "--data_root", str(data_root), "--device", "cpu", "--limit", "2", "--skip_timing"]
+    report = evaluate_experiments.main(argv)
+
+    for system in ("default", "frozen", "ground_truth", "pretrained_spk0"):
+        summary = json.loads((results / system / "summary.json").read_text())
+        assert summary["n_utterances"] == 2 and not summary["unavailable_metrics"], system
+        assert "f0_hz" in summary["metrics"], system
+    assert len(list((results / "frozen" / "prompts").glob("*.wav"))) == 12
+    checks = pd.read_csv(results / "report" / "checks.csv").set_index("experiment")
+    assert bool(checks.loc["frozen", "freeze_ok"]) and bool(checks.loc["default", "speaker_ok"])
+    text = report.read_text(encoding="utf-8")
+    for expected in ("## Experiments", "## Checks", "## Overview", "## Freezing", "freezing_before_after.png",
+                     "| default | frozen |"):
+        assert expected in text, expected
+    for name in ("all/comparison.png", "freezing/comparison.png", "freezing_before_after.png"):
+        assert (results / "report" / name).is_file(), name
+
+    stamp = (results / "default" / "summary.json").stat().st_mtime
+    evaluate_experiments.main(argv + ["--skip_checks"])  # finished systems are skipped
+    assert (results / "default" / "summary.json").stat().st_mtime == stamp
