@@ -12,7 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch VITS model."""
+"""PyTorch VITS model.
+
+The executable implementation matches modeling_vits_training.py from
+ylacombe/finetune-hf-vits. Local additions are explanatory comments and
+docstrings only.
+"""
 
 import math
 from collections.abc import Callable
@@ -26,14 +31,14 @@ from torch import nn
 
 from transformers.activations import ACT2FN
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-from transformers.masking_utils import bidirectional_mask_function, eager_mask
+from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask
 from transformers.modeling_outputs import (
     BaseModelOutput,
     ModelOutput,
 )
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import add_start_docstrings, add_start_docstrings_to_model_forward, logging, replace_return_docstrings
-from scripts.configuration_vits import VitsConfig
+from .configuration_vits import VitsConfig
 
 
 
@@ -907,7 +912,6 @@ class VitsHifiGanDiscriminatorPeriodResidualBlock(nn.Module):
         hidden_states = self.final_conv(hidden_states)
         fmap.append(hidden_states)
         # flatten the final feature map to produce a scalar-like score for the discriminator
-        hidden_states = hidden_states.flatten(1, -1)
         hidden_states = torch.flatten(hidden_states, 1, -1)
 
         return hidden_states, fmap
@@ -1963,19 +1967,7 @@ class VitsEncoder(nn.Module):
         # expand attention_mask
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-            # note: this originally used _prepare_4d_attention_mask from transformers.modeling_attn_mask_utils
-            # however that is deprecated and will be removed in Transformers v5.10.
-            # AI was used to debug this deprecation warning (GPT Sol 6.1)
-            # original: attention_mask = _prepare_4d_attention_mask(attention_mask, hidden_states.dtype)
-            attention_mask = eager_mask(
-                batch_size=hidden_states.shape[0],
-                q_length=hidden_states.shape[1],
-                kv_length=hidden_states.shape[1],
-                mask_function=bidirectional_mask_function,
-                attention_mask=attention_mask.to(torch.bool),
-                dtype=hidden_states.dtype,
-                device=hidden_states.device,
-            )
+            attention_mask = _prepare_4d_attention_mask(attention_mask, hidden_states.dtype)
 
         hidden_states = hidden_states * padding_mask
 
@@ -2505,31 +2497,17 @@ class VitsModelForPreTraining(VitsPreTrainedModel):
         speaker_embedding_size: Optional[int] = None,
         pad_to_multiple_of: Optional[int] = 2,
     ):
-        """Resize the speaker table, preserving pretrained weights when its width is unchanged.
+        """Resize the speaker table and rebuild speaker-conditioning projections.
 
-        Omitting ``speaker_embedding_size`` retains the current width for a
-        multi-speaker model. Existing rows and conditional projections are
-        preserved; only added rows are randomly initialized. Resize before creating
-        optimizers. Set ``pad_to_multiple_of=None`` for an exact speaker count.
-
-        Changing the width requires rebuilding all conditional projections.
+        Pass ``speaker_embedding_size`` explicitly, even when retaining the
+        current width. For a multi-speaker model, the Transformers resize helper
+        retains existing embedding rows, but the upstream implementation rebuilds
+        and reinitializes the flow, decoder, duration-predictor and posterior-encoder
+        conditioning layers. Resize before creating optimizers.
+        Set ``pad_to_multiple_of=None`` for an exact speaker count.
         """
-        if new_num_speakers < 1:
-            raise ValueError("new_num_speakers must be positive.")
-        if pad_to_multiple_of is not None and pad_to_multiple_of < 1:
-            raise ValueError("pad_to_multiple_of must be positive or None.")
         if pad_to_multiple_of is not None:
             new_num_speakers = ((new_num_speakers + pad_to_multiple_of - 1) // pad_to_multiple_of) * pad_to_multiple_of
-
-        if self.config.num_speakers > 1 and (
-            speaker_embedding_size is None or speaker_embedding_size == self.embed_speaker.embedding_dim
-        ):
-            self.embed_speaker = self._get_resized_embeddings(
-                self.embed_speaker, new_num_speakers, mean_resizing=False
-            )
-            self.config.num_speakers = new_num_speakers
-            self.config.speaker_embedding_size = self.embed_speaker.embedding_dim
-            return
 
         # first, take care of embed_speaker
         if self.config.num_speakers <= 1:

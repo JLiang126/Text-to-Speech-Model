@@ -1,4 +1,5 @@
-"""Fine-tune a VITS checkpoint on local LJSpeech data.
+"""
+Fine-tune a VITS checkpoint on local LJSpeech data.
 
 Run from the repository root:
     python -m scripts.train_model
@@ -9,8 +10,8 @@ another YAML object containing training settings. `--output-mode restart`
 starts a fresh run, and `new` requires an empty output root. The default mode
 is `restart`. Run files are written under `<output_dir>/run`, while listening
 samples and intermediate checkpoints are written beside `run`.
-The loader's existing split manifests are reused only when their settings
-match. Training progress is reported in the console, with three fixed validation
+The loader reuses existing split manifests without comparing saved settings.
+Training progress is reported in the console, with three fixed validation
 phrases synthesized per epoch and their text and phonemes saved in listening_samples.json.
 """
 
@@ -19,34 +20,29 @@ import argparse
 import json
 import logging
 import math
-import os
 import random
 import shutil
 import sys
-import wave
 from copy import deepcopy
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-import yaml
 from accelerate import Accelerator, DataLoaderConfiguration
 from accelerate.utils import set_seed
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase
 import time
 
 # Support direct execution and the upstream configuration used by the local model.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "train.yaml"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "finetune-hf-vits-main"))
 
-from scripts.DataConfig import DataConfig
+from scripts.DataConfig import DEFAULT_CONFIG_PATH, DataConfig, load_config
 from scripts.DataLoader import build_dataloaders
 from scripts.TextProcessor import configure_word_mismatch_warnings, load_vctk_tokenizer
 from scripts.AudioProcessor import AudioProcessor
@@ -60,22 +56,6 @@ from scripts.plots import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def load_config(config_path):
-    """Load training settings from a YAML object and resolve derived defaults."""
-    contents = config_path.read_text(encoding="utf-8")
-    settings = yaml.safe_load(contents)
-    if not isinstance(settings, dict):
-        raise ValueError(f"Training config must contain a YAML object: {config_path}")
-
-    # A null split directory lets DataConfig derive it from output_dir.
-    if settings.get("output_split_dir") is None:
-        settings.pop("output_split_dir", None)
-    # Preserve the DataConfig environment-variable default when using the bundled config.
-    if config_path.resolve() == DEFAULT_CONFIG_PATH and os.environ.get("LJSPEECH_ROOT"):
-        settings["data_root"] = os.environ["LJSPEECH_ROOT"]
-    return settings
 
 
 def parse_args():
@@ -104,7 +84,7 @@ def parse_args():
     )
     args = parser.parse_args()
 
-    # Load YAML settings, then resolve paths derived from the configured data root.
+    # DataConfig owns YAML loading and configuration validation.
     settings = load_config(args.config)
     cfg = DataConfig(**settings)
 
@@ -113,63 +93,18 @@ def parse_args():
         cfg.num_train_epochs = 1
         cfg.subset_size = 10 * cfg.per_device_train_batch_size  # Reduce dataset size for quick testing
 
-    # Accept both the dataset folder and its parent as the configured data root.
-    cfg.data_root = Path(cfg.data_root)
-    if not (cfg.data_root / "metadata.csv").exists() and (cfg.data_root / "LJSpeech-1.1").is_dir():
-        cfg.data_root /= "LJSpeech-1.1"
-    output_root = Path(cfg.output_dir)
-    cfg.output_split_dir = Path(cfg.output_split_dir)
-    split_dir_resolved = cfg.output_split_dir.resolve()
-    data_root_resolved = cfg.data_root.resolve()
-    if (
-        split_dir_resolved == data_root_resolved
-        or split_dir_resolved in data_root_resolved.parents
-        or data_root_resolved in split_dir_resolved.parents
-    ):
-        parser.error("output_split_dir must not overlap data_root; the dataset directory is read-only.")
-    run_dir = output_root / "run"
-
-    # Fail before loading a model or dataset when a setting cannot be used.
-    if cfg.num_train_epochs < 1 or cfg.per_device_train_batch_size < 1 or cfg.gradient_accumulation_steps < 1:
-        parser.error("Epochs, batch size and gradient accumulation steps must be positive.")
-    if cfg.learning_rate <= 0 or cfg.num_workers < 0:
-        parser.error("Learning rate must be positive and num_workers must be nonnegative.")
-    if cfg.mixed_precision not in ("no", "fp16", "bf16"):
-        parser.error("mixed_precision must be one of: no, fp16, bf16.")
-    if cfg.subset_size is not None and cfg.subset_size < 1:
-        parser.error("subset_size must be positive or null.")
-    if cfg.do_eval and (cfg.eval_steps < 1 or cfg.per_device_eval_batch_size < 1):
-        parser.error("Evaluation interval and batch size must be positive.")
-    if cfg.do_eval and cfg.max_eval_samples is not None and cfg.max_eval_samples < 1:
-        parser.error("max_eval_samples must be positive or null.")
-    if any(ratio < 0 for ratio in cfg.split_ratios) or not math.isclose(sum(cfg.split_ratios), 1.0):
-        parser.error("split_ratios must be nonnegative and sum to one.")
-    if len(cfg.split_ratios) != 3:
-        parser.error("split_ratios must contain train, validation and test ratios.")
-    cfg.output_dir = run_dir
-    if args.output_mode == "new" and output_root.exists():
-        if not output_root.is_dir() or any(output_root.iterdir()):
-            parser.error(f"Output directory ({output_root}) is not empty.")
+    try:
+        cfg.validate(output_mode=args.output_mode)
+    except ValueError as error:
+        parser.error(str(error))
+    cfg.output_dir /= "run"
     return cfg, args
 
 
-def load_data(cfg, tokenizer, num_workers):
+def load_data(cfg, tokenizer, num_workers, speaker_id, segment_frames):
     """
     Load the training and validation data according to the configuration.
     """
-    # A manifest is only valid for the split settings that created it. This
-    # prevents quietly training on stale splits after configuration changes.
-    summary_path = Path(cfg.output_split_dir) / "split_summary.json"
-    if summary_path.exists():
-        previous = json.loads(summary_path.read_text())["config"]
-        current = json.loads(json.dumps(cfg.to_dict()))
-        split_fields = ("seed", "subset_size", "split_ratios", "min_duration_sec",
-                        "max_duration_sec", "lowercase")
-        changed = [name for name in split_fields if previous[name] != current[name]]
-        if Path(previous["data_root"]).resolve() != Path(cfg.data_root).resolve():
-            changed.append("data_root")
-        if changed:
-            raise ValueError(f"Existing split settings differ ({', '.join(changed)}). Set a new output_split_dir.")
     tokenizer.add_blank = cfg.add_blank
     # Pass the checkpoint tokenizer directly so dataset token IDs match the model.
     # The validation loader keeps its configured batch size and sample cap.
@@ -178,6 +113,8 @@ def load_data(cfg, tokenizer, num_workers):
         batch_size=cfg.per_device_train_batch_size,
         num_workers=num_workers,
         tokenizer=tokenizer,
+        speaker_id=speaker_id,
+        segment_frames=segment_frames,
     )
     if not len(loaders["train"].dataset):
         raise ValueError("The training split is empty. Check duration limits, subset size and split ratios.")
@@ -185,49 +122,7 @@ def load_data(cfg, tokenizer, num_workers):
     eval_loader = loaders["val"] if cfg.do_eval else None
     if eval_loader is not None and not len(eval_loader.dataset):
         raise ValueError("The validation split is empty. Increase the subset or validation ratio.")
-    return loaders["train"], eval_loader, loaders["val"].dataset
-
-
-def configure_training_speaker(model, speaker_id):
-    """Select an existing speaker or add exactly the next available ID."""
-    if model.config.num_speakers <= 1:
-        return None
-    num_speakers = model.config.num_speakers
-    if not 0 <= speaker_id <= num_speakers:
-        raise ValueError(
-            f"speaker_id must be between 0 and {num_speakers - 1} for an existing speaker, "
-            f"or exactly {num_speakers} to add a new speaker; got {speaker_id}."
-        )
-    if speaker_id == num_speakers:
-        model.resize_speaker_embeddings(num_speakers + 1, pad_to_multiple_of=None)
-        logging.info("Added speaker ID %s with a randomly initialized embedding.", speaker_id)
-    return speaker_id
-
-
-def prepare_batch(batch, speaker_id, segment_frames):
-    """Translate TTSCollate's padded tensors and lengths into model inputs."""
-    text = batch["text_padded"]
-    spectrogram = batch["spec_padded"]
-    text_lengths = batch["text_lengths"]
-    spec_lengths = batch["spec_lengths"]
-    # These checks catch malformed text/audio pairs and avoid sending impossible
-    # alignments or too-short recordings into the model.
-    if torch.any(text_lengths < 1) or torch.any(spec_lengths < text_lengths):
-        raise ValueError("Each recording must have at least one audio frame per text token.")
-    if torch.any(spec_lengths < segment_frames):
-        raise ValueError("A recording is shorter than the model's training segment.")
-    # The collator pads samples to batch maxima; masks tell VITS which positions
-    # are real tokens/frames and which positions are padding.
-    text_mask = torch.arange(text.size(1), device=text.device)[None, :] < text_lengths[:, None]
-    spec_mask = torch.arange(spectrogram.size(2), device=text.device)[None, :] < spec_lengths[:, None]
-    speakers = None if speaker_id is None else torch.full(
-        (text.size(0),), speaker_id, dtype=torch.long, device=text.device
-    )
-    return {
-        "input_ids": text, "attention_mask": text_mask,
-        "labels": spectrogram, "labels_attention_mask": spec_mask,
-        "speaker_id": speakers,
-    }
+    return loaders["train"], eval_loader
 
 
 def discriminator_loss(real_outputs, generated_outputs):
@@ -258,11 +153,6 @@ def reconstruction_losses(outputs, batch, audio_processor, segment_frames):
         generated_mel = generated_mel.unsqueeze(0)
     return F.l1_loss(generated_mel, target_mel.float()), kl_loss(outputs)
 
-
-def generator_loss(outputs, real_maps, generated_maps, generated_scores, mel_loss, latent_loss, cfg):
-    return generator_losses(
-        outputs, real_maps, generated_maps, generated_scores, mel_loss, latent_loss, cfg
-    )["generator_total"]
 
 
 def generator_losses(outputs, real_maps, generated_maps, generated_scores, mel_loss, latent_loss, cfg):
@@ -301,187 +191,35 @@ def averaged_losses(totals):
     return {name: (totals[i] / totals[-1]).item() for i, name in enumerate(LOSS_NAMES)}
 
 
-@contextmanager
-def preserve_random_state(device: torch.device) -> Iterator[None]:
-    """Keep auxiliary work from advancing Python, NumPy, or CPU/CUDA RNGs."""
-    python_state = random.getstate()
-    numpy_state = np.random.get_state()
-    devices = []
-    if device.type == "cuda":
-        devices = [device.index if device.index is not None else torch.cuda.current_device()]
-    try:
-        with torch.random.fork_rng(devices=devices):
-            yield
-    finally:
-        random.setstate(python_state)
-        np.random.set_state(numpy_state)
-
-
 @torch.no_grad()
 def evaluate(model, discriminator, loader, alignment, audio_processor, speaker_id, segment_frames, accelerator, cfg):
     """
     Do evaluation on the validation set and return averaged metrics.
-    """
-    was_training = model.training
-    discriminator_was_training = discriminator.training
-    with preserve_random_state(accelerator.device):
-        try:
-            model.eval()
-            discriminator.eval()
-            total = torch.zeros(len(LOSS_NAMES) + 1, device=accelerator.device)
-            for batch in loader:
-                inputs = prepare_batch(batch, speaker_id, segment_frames)
-                outputs = model(**inputs, monotonic_alignment_function=alignment, return_dict=True)
-                mel, latent = reconstruction_losses(outputs, batch, audio_processor, segment_frames)
-                target_audio = slice_segments(
-                    batch["wav_padded"], outputs.ids_slice * cfg.hop_length, cfg.hop_length * segment_frames
-                )
-                real_scores, real_maps = discriminator(target_audio)
-                fake_scores, fake_maps = discriminator(outputs.waveform)
-                losses = generator_losses(outputs, real_maps, fake_maps, fake_scores, mel, latent, cfg)
-                losses["disc"] = discriminator_loss(real_scores, fake_scores)
-                accumulate_losses(total, losses, inputs["input_ids"].size(0), accelerator)
-            return averaged_losses(total)
-        finally:
-            model.train(was_training)
-            discriminator.train(discriminator_was_training)
 
+    Note: evaluation uses random number generation, so changing the number of evaluations
+    will change the randomness in training.
+    This is not an issue for our assignment if the number of evaluations is kept constant
+    across experiments.
 
-
-class save_sample_sounds_each_epoch:
-    """
-    Class for saving sample sounds for each epoch during training.
     """
 
-    def __init__(self, dataset, cfg, speaker_id, save_folder='listening_samples'):
-        """
-        Initialize the save_sample_sounds_each_epoch instance.
+    model.eval()
+    discriminator.eval()
+    total = torch.zeros(len(LOSS_NAMES) + 1, device=accelerator.device)
+    for batch in loader:
+        inputs = batch["model_inputs"]
+        outputs = model(**inputs, monotonic_alignment_function=alignment, return_dict=True)
+        mel, latent = reconstruction_losses(outputs, batch, audio_processor, segment_frames)
+        target_audio = slice_segments(
+            batch["wav_padded"], outputs.ids_slice * cfg.hop_length, cfg.hop_length * segment_frames
+        )
+        real_scores, real_maps = discriminator(target_audio)
+        fake_scores, fake_maps = discriminator(outputs.waveform)
+        losses = generator_losses(outputs, real_maps, fake_maps, fake_scores, mel, latent, cfg)
+        losses["disc"] = discriminator_loss(real_scores, fake_scores)
+        accumulate_losses(total, losses, inputs["input_ids"].size(0), accelerator)
+    return averaged_losses(total)
 
-        Args:
-            dataset (torch.utils.data.Dataset): The dataset containing audio samples.
-            cfg (DataConfig): The configuration object with training settings.
-            speaker_id (int): The ID of the speaker for which to save samples.
-        """
-        self.dataset = dataset
-        self.output_root = Path(cfg.output_dir).parent
-        self.speaker_id = speaker_id
-        self.sampling_rate = cfg.target_sr
-        self.prompts = self.select_validation_prompts(dataset, cfg.seed)
-        self.save_folder = self.output_root / save_folder
-
-    @staticmethod
-    def save_waveform(waveform, output_path, sampling_rate):
-        """
-        Save a waveform as a WAV file at the specified output path.
-
-        Args:
-            waveform (torch.Tensor): The audio waveform to save.
-            output_path (Path): The path to save the WAV file.
-            sampling_rate (int): The sampling rate of the audio.
-        """
-        
-        waveform = torch.as_tensor(waveform).detach().float().cpu().squeeze()
-        if waveform.ndim != 1:
-            raise ValueError("Listening samples must be mono audio.")
-        if waveform.numel() == 0 or not torch.isfinite(waveform).all():
-            raise FloatingPointError("Listening sample is empty or non-finite.")
-        pcm = (waveform.clamp(-1, 1).numpy() * 32767).astype(np.int16)
-        with wave.open(str(output_path), "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(sampling_rate)
-            wav.writeframes(pcm.tobytes())
-
-    @staticmethod
-    def get_validation_audio(dataset, prompt):
-        sample = dataset[prompt["validation_index"]]
-        return sample["waveform"], sample["sample_rate"]
-
-    @staticmethod
-    def select_validation_prompts(dataset, seed, num_samples=3):
-        if len(dataset) < num_samples:
-            raise ValueError(f"At least {num_samples} validation examples are required for listening samples.")
-
-        # pick random indices for validation samples
-        indices = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(seed))[:num_samples].tolist()
-        records = []
-        # loop through the selected indices and gather the corresponding records
-        for position, index in enumerate(indices):
-            source = dataset
-            source_index = index
-            while isinstance(source, torch.utils.data.Subset):
-                source_index = source.indices[source_index]
-                source = source.dataset
-            row = source.df.iloc[source_index]
-            input_ids = source._get_token_ids(source_index).tolist()
-            if source.tokenizer is not None:
-                phonemes = "".join(source.tokenizer.convert_ids_to_tokens(
-                    input_ids, skip_special_tokens=True,
-                ))
-            else:
-                phonemes = source.text_processor.sequence_to_text(input_ids)
-            records.append({
-                "validation_index": index,
-                "utt_id": str(row["utt_id"]),
-                "text": str(row["norm_text"]),
-                "clean_text": str(row["clean_text"]),
-                "phonemes": phonemes,
-                "input_ids": input_ids,
-                "seed": seed + position,
-            })
-        return records
-
-    def save_reference_audio(self):
-        """
-        Save the actual reference audio for the validation prompts for comparison
-        """
-        directory = self.save_folder
-        directory.mkdir(parents=True, exist_ok=True)
-        for position, prompt in enumerate(self.prompts, start=1):
-            audio, sample_rate = self.get_validation_audio(self.dataset, prompt)
-            self.save_waveform(audio, directory / f"original_sample_{position}.wav", sample_rate)
-
-    def save_prompt_metadata(self):
-        """
-        Save the metadata for the listening samples to a JSON file.
-        """
-        (self.save_folder / "listening_samples.json").write_text(json.dumps({
-            "speaker_id": self.speaker_id,
-            "sampling_rate": self.sampling_rate,
-            "filename_pattern": "epoch-{epoch}-sample-{sample}.wav",
-            "prompts": self.prompts,
-        }, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    @torch.no_grad()
-    def save_epoch(self, model, epoch):
-        """
-        Save validation samples
-        """
-        was_training = model.training # Remember the model's training state to restore it later.
-        model.eval()
-        device = next(model.parameters()).device
-        try:
-            for position, prompt in enumerate(self.prompts, start=1):
-                tokens = torch.tensor([prompt["input_ids"]], dtype=torch.long, device=device)
-                attention_mask = torch.ones_like(tokens, dtype=torch.bool)
-                with preserve_random_state(device):
-                    torch.random.default_generator.manual_seed(prompt["seed"])
-                    if device.type == "cuda":
-                        with torch.cuda.device(device):
-                            torch.cuda.manual_seed(prompt["seed"])
-                    outputs = model(
-                        input_ids=tokens,
-                        attention_mask=attention_mask,
-                        speaker_id=self.speaker_id,
-                    )
-                waveform = outputs.waveform[0, :int(outputs.sequence_lengths[0].item())]
-                self.save_waveform(
-                    waveform,
-                    self.save_folder / f"epoch-{epoch}-sample-{position}.wav",
-                    self.sampling_rate,
-                )
-        finally:
-            model.train(was_training)
 
 
 def make_scheduler(optimizer, cfg, total_steps):
@@ -509,20 +247,18 @@ def make_scheduler(optimizer, cfg, total_steps):
 
 
 @torch.no_grad()
-def save_inference_checkpoint(
-    model: VitsModelForPreTraining,
-    tokenizer: PreTrainedTokenizerBase,
-    output_dir: Path,
-    variant: str,
-    discriminator: Optional[VitsDiscriminator] = None,
+def save_inference_checkpoint(model: VitsModelForPreTraining, tokenizer: PreTrainedTokenizerBase,
+    output_dir: Path, variant: str, discriminator: Optional[VitsDiscriminator] = None,
 ) -> None:
-    """Export a detached generator without changing its live training parameters.
+    """
+    Save the model and tokenizer for inference.
 
     Remove training-added normalization while retaining the native WaveNet
     parametrizations expected by Transformers inference models.
+
+    Only the generator is exported for inference; the discriminator is optional.
     """
-    # Reconstruct on CPU: legacy weight-norm tensors cannot be deep-copied.
-    # Preserve the training RNG while initializing the export-only modules.
+
     with torch.random.fork_rng(devices=[]), torch.device("cpu"):
         export_model = VitsModel(deepcopy(model.config)).to(dtype=model.dtype)
         export_model.decoder.apply_weight_norm()
@@ -555,11 +291,12 @@ def main():
     # constructing anything that may use randomness.
     cfg, args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    # suppress word mismatch warnings if configured
     configure_word_mismatch_warnings(cfg.suppress_word_mismatch_warnings)
     accelerator = Accelerator(
         gradient_accumulation_steps=cfg.gradient_accumulation_steps,
         mixed_precision=cfg.mixed_precision, step_scheduler_with_optimizer=False,
-        dataloader_config=DataLoaderConfiguration(non_blocking=True)
+        dataloader_config=DataLoaderConfiguration(non_blocking=True) # asynchronous data loading
     )
     set_seed(cfg.seed)
     # VITS uses monotonic alignment to match text tokens to audio frames.
@@ -599,10 +336,14 @@ def main():
     if tokenizer.pad_token_id != 0:
         raise ValueError("TTSCollate pads with zero; this checkpoint must use padding token ID zero.")
 
-    speaker_id = configure_training_speaker(model, cfg.speaker_id)
+    speaker_id = cfg.speaker_id if model.config.num_speakers > 1 else None
+    if speaker_id is not None and not 0 <= speaker_id < model.config.num_speakers:
+        raise ValueError(
+            f"speaker_id must be between 0 and {model.config.num_speakers - 1}; got {speaker_id}."
+        )
     # The model slices latent/spectrogram sequences in frames, but audio crops in samples.
-    segment_frames = model.segment_size
-    segment_samples = model.config.segment_size
+    segment_frames = model.segment_size # Number of frames in a segment for the model's latent/spectrogram sequences
+    segment_samples = model.config.segment_size # Number of audio samples in a segment
 
     # Split the discriminator from the loaded model so it can have its own optimizer
     # and update schedule; it is reattached when saving the final model.
@@ -660,31 +401,22 @@ def main():
     accelerator.wait_for_everyone()
 
     with accelerator.main_process_first():
-        train_loader, eval_loader, validation_dataset = load_data(cfg, tokenizer, cfg.num_workers)
+        train_loader, eval_loader = load_data(
+            cfg, tokenizer, cfg.num_workers, speaker_id, segment_frames,
+        )
 
     if accelerator.is_main_process:
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
         # Set up logging to file for the main process.
-        file_handler = logging.FileHandler(
-            cfg.output_dir / "training.log", mode="w", encoding="utf-8"
-        )
-        file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)s: %(message)s"
-        ))
+        file_handler = logging.FileHandler(cfg.output_dir / "training.log", mode="w", encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
         logging.getLogger().addHandler(file_handler)
     accelerator.wait_for_everyone()
 
     # audio processor for loss computation and feature extraction.
     audio_processor = AudioProcessor(cfg)
 
-    sample_sounds = None
-    if accelerator.is_main_process:
-        sample_sounds = save_sample_sounds_each_epoch(validation_dataset, cfg, speaker_id)
-        sample_sounds.save_reference_audio()
-        sample_sounds.save_prompt_metadata()
-        # save samples prior to training to see how they sound
-        sample_sounds.save_epoch(accelerator.unwrap_model(model), 0)
-    accelerator.wait_for_everyone()
+
 
     # -------- 3. Optimizers and schedulers. ----------
     # Separate optimizers keep generator and discriminator parameter updates independent.
@@ -731,7 +463,7 @@ def main():
     # gradient accumulation can allow for effectively larger batch sizes without increasing memory usage.
     updates_per_epoch = math.ceil(len(train_loader) / cfg.gradient_accumulation_steps)
     total_steps = cfg.num_train_epochs * updates_per_epoch
-    # note: come back to this
+    # set up the learning rate schedulers for the generator and discriminator
     gen_scheduler = make_scheduler(gen_optimizer, cfg, total_steps)
     disc_scheduler = make_scheduler(disc_optimizer, cfg, total_steps) if train_discriminator else None
     if accelerator.is_main_process:
@@ -800,7 +532,7 @@ def main():
             with accelerator.accumulate(model, discriminator):
 
                 # handle input preparation and forward pass through the model
-                inputs = prepare_batch(batch, speaker_id, segment_frames) # prepare the input batch for the model
+                inputs = batch["model_inputs"]
                 outputs = model(**inputs, monotonic_alignment_function=alignment, return_dict=True) # forward pass through the model
                 # The model outputs include the generated waveform and alignment information.
 
@@ -836,7 +568,7 @@ def main():
                 # Compute reconstruction losses for generated audio
                 # Reconstruction losses include mel-spectrogram loss and latent space loss
                 # mel-spectrogram loss measures the difference between the generated and target mel-spectrograms, rather than the raw waveforms.
-                # latent loss measures the difference between the generated and target latent representations, i.e. feature maps from the discriminator.
+                # latent loss measures the difference between the generated and target latent representations
                 mel_loss, latent_loss = reconstruction_losses(outputs, batch, audio_processor, segment_frames)
                 # Combine reconstruction losses with adversarial loss to form the generator loss
                 losses = generator_losses(outputs, real_maps, fake_maps, fake_scores, mel_loss, latent_loss, cfg)
@@ -906,9 +638,6 @@ def main():
             )
             logger.info("Saved model checkpoint to %s", model_checkpoint_dir)
         
-        # Save the three fixed listening samples for this epoch.
-        if accelerator.is_main_process:
-            sample_sounds.save_epoch(accelerator.unwrap_model(model), epoch + 1)
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
             # Save the training and validation loss history as CSV files and plot the loss curves.
