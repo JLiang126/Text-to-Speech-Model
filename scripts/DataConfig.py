@@ -1,7 +1,30 @@
+import math
 import os
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+
+import yaml
+
+
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "train.yaml"
+
+
+def load_config(config_path: Path) -> Dict:
+    """Load training settings from a YAML object and resolve derived defaults."""
+    contents = config_path.read_text(encoding="utf-8")
+    settings = yaml.safe_load(contents)
+    if not isinstance(settings, dict):
+        raise ValueError(f"Training config must contain a YAML object: {config_path}")
+
+    # A null split directory lets DataConfig derive it from output_dir.
+    if settings.get("output_split_dir") is None:
+        settings.pop("output_split_dir", None)
+    # Preserve the environment-variable default when using the bundled config.
+    if config_path.resolve() == DEFAULT_CONFIG_PATH and os.environ.get("LJSPEECH_ROOT"):
+        settings["data_root"] = os.environ["LJSPEECH_ROOT"]
+    return settings
+
 
 # Dataclass Configuration and Seed
 @dataclass
@@ -24,10 +47,9 @@ class DataConfig:
     persistent_workers: bool = False
 
     # Test Preprocessing
-    lowercase: bool = True # Legacy cleaner only; simple training cleaning preserves case.
-    add_blank: bool = True
+    lowercase: bool = False # Lowercases the text during preprocessing. Not really neccessary
+    add_blank: bool = True # Added for visibility and for potential encoding testing
     suppress_word_mismatch_warnings: bool = False
-    preprocess_token_ids: bool = False
 
     # Audio Preprocessing
     target_sr: int = 22050 # Native LJSpeech sample rate (Hz)
@@ -98,3 +120,41 @@ class DataConfig:
         d["output_split_dir"] = str(self.output_split_dir)
         d["output_dir"] = str(self.output_dir)
         return d
+
+    def validate(self, output_mode: str = "restart") -> None:
+        """Resolve the dataset path and validate settings before starting a run."""
+        self.data_root = Path(self.data_root)
+        if not (self.data_root / "metadata.csv").exists() and (self.data_root / "LJSpeech-1.1").is_dir():
+            self.data_root /= "LJSpeech-1.1"
+        self.output_dir = Path(self.output_dir)
+        if self.output_split_dir is None:
+            raise ValueError("output_split_dir must be resolved before validation.")
+        self.output_split_dir = Path(self.output_split_dir)
+        split_dir_resolved = self.output_split_dir.resolve()
+        data_root_resolved = self.data_root.resolve()
+        if (
+            split_dir_resolved == data_root_resolved
+            or split_dir_resolved in data_root_resolved.parents
+            or data_root_resolved in split_dir_resolved.parents
+        ):
+            raise ValueError("output_split_dir must not overlap data_root; the dataset directory is read-only.")
+
+        if self.num_train_epochs < 1 or self.per_device_train_batch_size < 1 or self.gradient_accumulation_steps < 1:
+            raise ValueError("Epochs, batch size and gradient accumulation steps must be positive.")
+        if self.learning_rate <= 0 or self.num_workers < 0:
+            raise ValueError("Learning rate must be positive and num_workers must be nonnegative.")
+        if self.mixed_precision not in ("no", "fp16", "bf16"):
+            raise ValueError("mixed_precision must be one of: no, fp16, bf16.")
+        if self.subset_size is not None and self.subset_size < 1:
+            raise ValueError("subset_size must be positive or null.")
+        if self.do_eval and (self.eval_steps < 1 or self.per_device_eval_batch_size < 1):
+            raise ValueError("Evaluation interval and batch size must be positive.")
+        if self.do_eval and self.max_eval_samples is not None and self.max_eval_samples < 1:
+            raise ValueError("max_eval_samples must be positive or null.")
+        if any(ratio < 0 for ratio in self.split_ratios) or not math.isclose(sum(self.split_ratios), 1.0):
+            raise ValueError("split_ratios must be nonnegative and sum to one.")
+        if len(self.split_ratios) != 3:
+            raise ValueError("split_ratios must contain train, validation and test ratios.")
+        if output_mode == "new" and self.output_dir.exists():
+            if not self.output_dir.is_dir() or any(self.output_dir.iterdir()):
+                raise ValueError(f"Output directory ({self.output_dir}) is not empty.")

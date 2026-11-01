@@ -27,18 +27,16 @@ accumulated scores represent the log-likelihood of the entire alignment path.
 import logging
 
 import numpy as np
-
+import torch
 
 logger = logging.getLogger(__name__)
 
 
-def _maximum_path_python(paths, values, t_ys, t_xs):
+def maximum_path_python(paths, values, t_ys, t_xs):
     """
     This is a pure Python implementation of the maximum path algorithm for monotonic alignment.
 
-    It's been adapted from the cython implementation from the finetune-hf-vits repository.
-    It's intended that numba is optionally used to accelerate this computation, since it's 
-    easier to install than Cython.
+    Numba optionally compiles this same algorithm to accelerate computation.
 
     Args:
         paths (np.ndarray): Array to store the resulting alignment paths.
@@ -86,17 +84,24 @@ def _maximum_path_python(paths, values, t_ys, t_xs):
 
 
 class MonotonicAlignment:
-    """Select an alignment kernel once per instance."""
+    """
+    Select an alignment kernel once per instance, depending on the availability of 
+    Numba for performance optimization.
+    """
 
     def __init__(self):
         self._kernel = self._select_maximum_path()
 
     def _select_maximum_path(self):
+        """
+        Choose either numba or pure python implementation for the maximum path computation.
+        Ideally numba is used for performance, but falls back to pure Python if unavailable.
+        """
         try:
             from numba import njit
 
-            kernel = njit(nogil=True)(_maximum_path_python)
-            # Compile and exercise the training signature before selecting Numba.
+            kernel = njit(nogil=True)(maximum_path_python)
+            # Compile and test some sample training data
             kernel(
                 np.zeros((1, 2, 1), dtype=np.int32),
                 np.zeros((1, 2, 1), dtype=np.float32),
@@ -108,53 +113,39 @@ class MonotonicAlignment:
                 "Numba alignment startup check failed; using Python alignment.",
                 exc_info=True,
             )
-            return _maximum_path_python
+            return maximum_path_python
         logger.info("Using Numba alignment.")
         return kernel
 
 
-    def maximum_path_c(self, paths, values, t_ys, t_xs):
-        """
-        Fill paths and accumulate scores in place, matching the Cython API.
-        """
-        if paths.ndim != 3 or values.shape != paths.shape:
-            raise ValueError("paths and values must have matching [batch, frames, tokens] shapes.")
-        if paths.dtype != np.int32 or values.dtype != np.float32:
-            raise TypeError("paths must be int32 and values must be float32.")
-        if t_ys.shape != (paths.shape[0],) or t_xs.shape != (paths.shape[0],):
-            raise ValueError("Length arrays must contain one entry per batch item.")
-        if not np.issubdtype(t_ys.dtype, np.integer) or not np.issubdtype(t_xs.dtype, np.integer):
-            raise TypeError("Length arrays must contain integers.")
-        if np.any(
-            (t_xs < 1)
-            | (t_ys < t_xs)
-            | (t_ys > paths.shape[1])
-            | (t_xs > paths.shape[2])
-        ):
-            raise ValueError("Alignment requires 1 <= tokens <= frames within the array bounds.")
-        if not paths.flags.writeable or not values.flags.writeable:
-            raise ValueError("paths and values must be writable.")
-
-        # Call the selected kernel to perform the maximum path computation.
-        self._kernel(paths, values, t_ys, t_xs)
-
     def maximum_path(self, neg_cent, mask):
-        """Return a detached alignment on the input tensor's device and dtype.
+        """
+        Get the maximum path alignment for the input scores and mask.
 
         Inputs have shape [batch, frames, tokens]. The mask must describe a
         nonempty rectangular valid region at the start of each batch item.
-        """
-        import torch
 
+        Args:
+            neg_cent (torch.Tensor): Input scores with shape [batch, frames, tokens].
+            mask (torch.Tensor): Boolean mask indicating valid regions with the same shape as neg_cent.
+        """
+
+        # perform some basic input validation
         if neg_cent.ndim != 3 or mask.shape != neg_cent.shape:
             raise ValueError("Scores and mask must have matching [batch, frames, tokens] shapes.")
         if neg_cent.shape[1] == 0 or neg_cent.shape[2] == 0:
             raise ValueError("Alignment requires nonempty frame and token dimensions.")
 
+        # put the input tensors on CPU and convert to numpy arrays for processing
         values = neg_cent.detach().to(device="cpu", dtype=torch.float32).numpy().copy()
         paths = np.zeros(values.shape, dtype=np.int32)
+        # compute the lengths of valid frames and tokens for each batch item
         t_ys = mask.sum(1)[:, 0].detach().cpu().numpy().astype(np.int32)
         t_xs = mask.sum(2)[:, 0].detach().cpu().numpy().astype(np.int32)
-        self.maximum_path_c(paths, values, t_ys, t_xs)
+
+        # check that the computed lengths of valid frames and tokens are within acceptable bounds
+        if np.any((t_xs < 1) | (t_ys < t_xs) | (t_ys > values.shape[1]) | (t_xs > values.shape[2])):
+            raise ValueError("Alignment requires 1 <= tokens <= frames within the array bounds.")
+        self._kernel(paths, values, t_ys, t_xs)
 
         return torch.from_numpy(paths).to(device=neg_cent.device, dtype=neg_cent.dtype)

@@ -6,10 +6,9 @@ output_split_dir: null # Uses output_dir/splits if not specified.
 seed: 42
 split_ratios: [0.9, 0.05, 0.05]
 subset_size: null
-lowercase: true
+lowercase: false
 add_blank: true
 suppress_word_mismatch_warnings: true # Hide only phonemizer word-count mismatch warnings.
-preprocess_token_ids: true # Cache tokens in memory before data-loader workers start.
 speaker_embedding_lr_ratio: 1.0
 
 # Audio preprocessing

@@ -6,10 +6,9 @@ output_split_dir: null # Uses output_dir/splits if not specified.
 seed: 42
 split_ratios: [0.9, 0.05, 0.05]
 subset_size: null
-lowercase: true
+lowercase: false
 add_blank: true
 suppress_word_mismatch_warnings: true # Hide only phonemizer word-count mismatch warnings.
-preprocess_token_ids: true # Cache tokens in memory before data-loader workers start.
 
 # Audio preprocessing
 target_sr: 22050
@@ -32,7 +31,7 @@ speaker_id: 0
 
 # Training
 # Base output folder; run files are stored in its fixed run/ subdirectory.
-output_dir: outputs/unfreeze_speech_embeddings_only_50xLR/
+output_dir: outputs/unfreeze_speech_embeddings_only_20xLR/
 num_train_epochs: 15
 num_workers: 4
 persistent_workers: true # Keep worker processes alive between epochs; ignored with zero workers.
