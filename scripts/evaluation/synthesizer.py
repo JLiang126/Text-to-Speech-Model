@@ -12,8 +12,8 @@ Two checkpoint formats, one interface (``synthesize(text, seed)`` -> (waveform, 
    format finetune-hf-vits (Y. Lacombe, https://github.com/ylacombe/finetune-hf-vits,
    reference copy in ``finetune-hf-vits-main/``) loads and saves, e.g. the pretrained
    ``ylacombe/vits-vctk-with-discriminator``, a run's output folder, or one of its
-   ``checkpoint-<step>`` folders. Text front-end: the checkpoint's own ``VitsTokenizer``,
-   i.e. exactly what fine-tuning used.
+   ``checkpoint-<step>`` folders. Text front-end: the training data's, i.e.
+   ``clean_normalised_text`` and the fixed VCTK tokenizer from scripts/TextProcessor.py.
 
 Nothing here changes a model; this module only loads checkpoints and runs inference.
 Before either front-end, ``normalise_input_text`` spells out numbers, money, % and &
@@ -367,6 +367,22 @@ def load_hf_vits(model: PathLike, base_model: PathLike = DEFAULT_BASE_MODEL, str
     return net.eval(), source
 
 
+def training_text_frontend(source: PathLike):
+    """The text path the fine-tuning used, from scripts/TextProcessor.py:
+    ``clean_normalised_text`` (punctuation mapping, brackets to commas, other symbols removed), then
+    ``load_vctk_tokenizer`` (the checkpoint's VitsTokenizer with the <unk> / ᵻ ID collision fixed).
+
+    Returns (tokenizer, cleaner, name). A checkpoint whose vocabulary is not the VCTK one falls
+    back to its own VitsTokenizer with no extra cleaning (name "hf").
+    """
+    try:
+        from scripts.TextProcessor import clean_normalised_text, load_vctk_tokenizer
+        return load_vctk_tokenizer(str(source)), clean_normalised_text, "training"
+    except (ImportError, ValueError, OSError):
+        from transformers import VitsTokenizer
+        return VitsTokenizer.from_pretrained(str(source)), None, "hf"
+
+
 class HFVITSSynthesizer(_Synthesizer):
     """Loads a Hugging Face-format VITS model (transformers ``VitsModel``) for inference."""
 
@@ -375,12 +391,10 @@ class HFVITSSynthesizer(_Synthesizer):
                  length_scale: float = LENGTH_SCALE, expand_numbers: bool = True, strict: bool = True,
                  base_model: PathLike = DEFAULT_BASE_MODEL):
         import torch
-        from transformers import VitsTokenizer
-
         logging.getLogger("phonemizer").setLevel(logging.ERROR)
         _use_bundled_espeak()  # the tokenizer phonemises with espeak-ng
         net, source = load_hf_vits(model, base_model, strict)
-        self.tokenizer = VitsTokenizer.from_pretrained(str(source))
+        self.tokenizer, self._clean, frontend = training_text_frontend(source)
 
         self.model = net.to(device).eval()
         # VitsModel reads these attributes at inference (length = durations / speaking_rate)
@@ -390,13 +404,18 @@ class HFVITSSynthesizer(_Synthesizer):
         self.noise_scale, self.noise_scale_w, self.length_scale = noise_scale, noise_scale_w, length_scale
         self.device = device
         self.expand_numbers = expand_numbers
-        self.frontend = "hf"
+        self.frontend = frontend
         self.sample_rate = int(self.model.config.sampling_rate)
         num_speakers = int(getattr(self.model.config, "num_speakers", 1) or 1)
         self.n_speakers = num_speakers if num_speakers > 1 else 0
         self.speaker_id = speaker_id  # validated by the setter
         self.checkpoint_path = str(model)
         self._torch = torch
+
+    def prepare_text(self, text: str) -> str:
+        """Numbers spelled out, then the same cleaning as the training data (clean_text column)."""
+        text = super().prepare_text(text)
+        return self._clean(text) if self._clean else text
 
     def text_to_ids(self, text: str):
         return self.tokenizer(self.prepare_text(text), return_tensors="pt")

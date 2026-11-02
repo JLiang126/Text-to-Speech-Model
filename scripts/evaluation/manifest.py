@@ -8,8 +8,9 @@ from, so the same manifest can break when a script runs from somewhere else.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Iterable, List, Optional, Union
 
 import pandas as pd
 
@@ -58,3 +59,14 @@ def load_manifest(manifest_path: PathLike, data_root: Optional[PathLike] = None,
                       for p, u in zip(df["wav_path"], df["utt_id"])]
     df["ref_text"] = df[text_col].astype(str)
     return df
+
+
+def split_fingerprint(utt_ids: Iterable[str]) -> str:
+    """Short hash of a set of utterance IDs: equal fingerprints = the same sentences (order ignored)."""
+    return hashlib.sha1("\n".join(sorted(map(str, utt_ids))).encode("utf-8")).hexdigest()[:12]
+
+
+def overlap_with(utt_ids: Iterable[str], manifest_path: PathLike) -> int:
+    """How many of ``utt_ids`` appear in another manifest (e.g. the training split)."""
+    other = set(pd.read_csv(manifest_path, usecols=["utt_id"])["utt_id"].astype(str))
+    return len(set(map(str, utt_ids)) & other)

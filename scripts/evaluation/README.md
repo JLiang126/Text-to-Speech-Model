@@ -12,19 +12,21 @@ controlled change. Owner: Adi.
 | `scripts/evaluate.py` | Scores one system on the test split. Writes per-sentence metrics, a summary with 95% CIs, and latency/RTF |
 | `scripts/compare.py` | Combines several systems into the report table, paired significance tests and figures |
 | `scripts/evaluate_experiments.py` | Evaluates every experiment checkpoint in one resumable run and writes the report tables, figures and checks |
+| `scripts/data_checks.py` | Split and loader checks: metadata coverage, unique IDs, disjoint splits, every manifest file present and in spec, proportions, and every item of a batch in range. Also counts how many evaluated sentences were in a training split |
 | `scripts/rank_speakers.py` | Ranks the VCTK speakers by how close they sound to LJSpeech, with bootstrap uncertainty: picks the closest / median / furthest starting speaker for the speaker-similarity experiment |
-| `scripts/evaluation/` | The building blocks: `audio`, `manifest`, `metrics`, `timing`, `stats`, `synthesizer`, `text_normalise`, `speakers`, `prompts`, plus `vctk_speakers.csv` (speaker index -> VCTK ID) |
+| `scripts/evaluation/` | The building blocks: `audio`, `manifest`, `metrics`, `timing`, `stats`, `synthesizer`, `text_normalise`, `speakers`, `prompts`, `checkpoints` (weight checks), `training_logs` (loss histories of the runs), plus `vctk_speakers.csv` (speaker index -> VCTK ID) |
 | `tests/` | `python -m pytest tests -q`. Runs offline. The official-format tests need `VITS_DIR` to point at the VITS code |
 
 ## Evaluating every experiment in one go (`scripts/evaluate_experiments.py`)
 
-1. Put the checkpoints where `experiments/experiments.csv` says (default `checkpoints/model_<experiment>.safetensors`; git ignores them).
-2. Run `python scripts/evaluate_experiments.py` from the repo root. It:
-   - checks every checkpoint against the base model (`report/checks.csv`): the configured speaker row must be the one that trained, and frozen modules must be unchanged;
+0. **Score on the split the runs trained with.** `python scripts/data_checks.py --config configs/no_droplayer.yaml` rebuilds it into `dataset/splits/` (seed 42, full dataset, 90/5/5: the same split as notebook section 1.1) and checks it. A model scores unrealistically well on sentences it trained on, so `evaluate.py` refuses to score a model on test sentences found in a training manifest (the run's own `splits/train_manifest.csv` when available, else the one beside `--manifest`); `--allow_overlap` overrides this.
+1. Put the checkpoints where `experiments/experiments.csv` says (default `checkpoints/model_<experiment>.safetensors`; Michael's `model.<experiment>.safetensors` names also work; git ignores them). Put the training run folders (loss histories, `training_config.json`, `splits/`) in `outputs/`, as named by each config's `output_dir`.
+2. Run `python scripts/evaluate_experiments.py --limit 150` from the repo root (CPU budget; drop `--limit` on a GPU). It:
+   - checks every checkpoint against the base model (`report/checks.csv`): the configured speaker row must be the one that trained, and frozen modules must be unchanged. With the run folders it also compares each run's `training_config.json` with its config, and counts the scored test sentences that were in the run's training split (must be 0);
    - scores each experiment, the real recordings (ceiling) and the pretrained model with each run's speaker index (floors `pretrained_spk<k>`), in the priority order of `experiments/report_plan.json`;
    - times one system (all runs share the architecture) and synthesises the 12 prompts per system;
-   - writes `results/experiments/report/report.md` with the experiment table, the checks, an overview, one section per question (table, figure, paired tests) and a before-vs-after figure for the speaker runs.
-3. It resumes where it stopped: finished systems are skipped. `--limit 20` gives a quick preview; `--report_only` rebuilds the report from whatever has finished.
+   - writes `results/experiments/report/report.md` with the experiment table, the checks, an overview, one section per question (table, figure, paired tests), a before-vs-after figure for the speaker runs, and each section's validation-loss curves and table from the training logs.
+3. It resumes where it stopped: a system counts as finished only if it was scored on exactly the same sentences (`summary.json` stores a fingerprint of the test IDs), so results from an older split are re-scored, never reused. `--limit 20` gives a quick preview; `--report_only` rebuilds the report from whatever has finished.
 4. **New checkpoints:** add a row to `experiments.csv` (speaker_id and settings; the `description` shows in the report) and add the name to a section of `report_plan.json`.
 
 Bare weight files (`model_*.safetensors`) carry no config or tokenizer; both come from `--base_model` (default `ylacombe/vits-vctk-with-discriminator`), which fine-tuning does not change.
@@ -110,10 +112,10 @@ How to read them:
 
 ## Fairness controls
 
-- **Same test sentences:** the same test manifest for every system. It is never used for training or for picking checkpoints.
+- **Same, held-out test sentences:** the same test manifest for every system, from the split the runs trained with. It is never used for training or for picking checkpoints, and `evaluate.py` checks this (see step 0 above).
 - **Same seeds:** each sentence gets its own seed (CRC32 of `seed:utt_id`), identical across systems. VITS samples noise at inference (`noise_scale` 0.667, `noise_scale_w` 0.8). Without fixed seeds, part of any difference would be sampling luck.
 - **Same preprocessing for all audio:** DC removal, peak normalisation to 0.95 and silence trimming at -40 dB, mirroring `scripts/AudioProcessor.py`.
-- **Same text front-end as training:** the checkpoint's own `VitsTokenizer` (Hugging Face format) or `scripts/TextProcessor.py` (official format).
+- **Same text front-end as training:** for Hugging Face checkpoints, `clean_normalised_text` and the fixed VCTK tokenizer (`load_vctk_tokenizer`) from `scripts/TextProcessor.py`, exactly as `DataLoader` prepares the training text; for official-format checkpoints, `TextProcessor`.
 
 ## Speaker ranking (`rank_speakers.py`)
 
@@ -174,23 +176,18 @@ These cover sentence-to-sentence variation, not training-run variation. That nee
 - `embeddings.npz`: every embedding; `--resume` continues a stopped run from it.
 - `wavs/`: one training sentence by each pick, plus the real recording.
 
-## Notebook cells (section 1.4)
+## Notebook cells
 
-```python
-import pandas as pd, json
-from IPython.display import Image, Audio, display
-display(pd.read_csv("results/comparison/comparison_table.csv"))
-display(pd.read_csv("results/comparison/paired_tests.csv")[["a", "b", "metric", "mean_diff", "ci_low", "ci_high", "wilcoxon_p_holm", "cohens_dz", "verdict"]])
-display(Image("results/comparison/comparison.png"))
-for exp in ("expA", "expB"):
-    for p in json.load(open(f"wav_examples/{exp}_prompts.json"))["prompts"][:3]:
-        print(exp, p["category"], "-", p["text"]); display(Audio(f"wav_examples/{p['file']}"))
-```
+`55_A3.ipynb` runs these tools in place:
+- **1.1 (after the waveform and spectrogram cell):** the split and full-batch checks (`scripts/data_checks.py`).
+- **1.4.1:** the evaluation. By default it rebuilds the report from saved results; set `RUN_EVALUATION = True` to score. It shows the held-out check, the overview table, latency/RTF, and one cell per question with its paired tests, figures and validation losses.
+- **1.4.2:** the 12 prompts, with the submitted system's wavs copied to `wav_examples/` and side-by-side listening.
 
 ## Known limitations
 
-- **Untested on real audio:** the learned metrics download their weights on first use (Whisper `small.en` alone is about 460 MB). If a download fails, that metric is recorded as NaN and listed under `unavailable_metrics` in `summary.json`; the rest of the run continues.
-- **CI width:** with fewer than about 20 test sentences, the bootstrap CIs are too narrow. Use the full 150.
+- **Downloads:** the learned metrics download their weights on first use (Whisper `small.en` alone is about 460 MB). If a download fails, that metric is recorded as NaN and listed under `unavailable_metrics` in `summary.json`; the rest of the run continues, and the system counts as unfinished.
+- **CI width:** with fewer than about 20 test sentences, the bootstrap CIs are too narrow. Use at least 150 of the 646 test sentences.
+- **Validation losses** are teacher-forced reconstruction losses (posterior path), not free synthesis; only mel, KL and duration are comparable between runs, since each run has its own discriminator.
 
 ## Sources
 

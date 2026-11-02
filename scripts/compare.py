@@ -290,6 +290,11 @@ def main(argv: Optional[List[str]] = None) -> Dict[str, object]:
             s.label = f"{s.label} ({s.folder.name})"
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    test_sets = {s.label: (s.summary.get("test_set") or {}).get("fingerprint") for s in systems if s.summary}
+    if len({fp for fp in test_sets.values()}) > 1:  # e.g. one system still scored on an old split
+        notes_sets = ", ".join(f"{label}: {fp or 'unknown'}" for label, fp in test_sets.items())
+        print(f"[warn] the systems were scored on different test sets ({notes_sets}); "
+              "the table mixes them and paired tests use only the shared sentences")
 
     table = results_table(systems)
     table.to_csv(out / "comparison_table.csv", index=False)

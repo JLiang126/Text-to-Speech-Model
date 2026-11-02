@@ -482,7 +482,7 @@ def test_hf_synthesis_is_seeded_and_reads_training_checkpoints(tmp_path):
     a3, _ = synth.synthesize("Hello world, this is a test.", seed=8)
     assert a1.ndim == 1 and a1.size > 0 and info["n_tokens"] > 0
     assert np.array_equal(a1, a2) and not np.array_equal(a1, a3)
-    assert synth.speaker_table().shape == (4, 16) and synth.frontend == "hf"
+    assert synth.speaker_table().shape == (4, 16) and synth.frontend == "training"  # TextProcessor path
     assert "three hundred" in synth.prepare_text("I have 300 cats.")  # digits spelled out, not dropped
 
     _training_checkpoint(model, tmp_path / "run" / "checkpoint-1500")
@@ -586,7 +586,7 @@ def test_evaluate_runs_a_hf_training_checkpoint(tmp_path):
                              "--speaker_id", "2", "--manifest", str(split_dir / "test_manifest.csv"),
                              "--data_root", str(data_root), "--device", "cpu", "--out_dir", str(out),
                              "--metrics", "mcd", "--limit", "2"])
-    assert summary["step"] == 1500 and summary["n_utterances"] == 2 and summary["settings"]["frontend"] == "hf"
+    assert summary["step"] == 1500 and summary["n_utterances"] == 2 and summary["settings"]["frontend"] == "training"
     assert summary["metrics"]["mcd_dtw"]["n"] == 2
 
 
@@ -735,12 +735,28 @@ def test_evaluate_experiments_scores_resumes_and_reports(tmp_path, monkeypatch):
     data_root, split_dir = _fake_dataset(tmp_path, n=8)
     base = _tiny_hf_model(tmp_path / "base", num_speakers=4)
     ckpt = tmp_path / "checkpoints"
-    _save_weights(_fine_tuned(base, 0), ckpt / "model_default.safetensors")
+    # saved under the name Michael's training writes (dots); the table lists the underscore name
+    _save_weights(_fine_tuned(base, 0), ckpt / "model.default.safetensors")
     _save_weights(_fine_tuned(base, 1, freeze=("text_encoder",), seed=1), ckpt / "model_frozen.safetensors")
+    # training logs of the default run: loss histories, its settings and the split it trained on
+    runs = tmp_path / "outputs"
+    (runs / "default_run" / "run").mkdir(parents=True)
+    (runs / "default_run" / "splits").mkdir()
+    history = pd.DataFrame({"epoch": [1, 2, 3], "mel": [0.5, 0.45, 0.43], "kl": [2.0, 1.8, 1.7],
+                            "duration": [1.4, 1.3, 1.25], "fmaps": 1.0, "gen": 2.0, "disc": 2.4, "generator_total": 40.0})
+    history.to_csv(runs / "default_run" / "run" / "validation_loss_history.csv", index=False)
+    history.assign(mel=history["mel"] - 0.05).to_csv(runs / "default_run" / "run" / "training_loss_history.csv", index=False)
+    (runs / "default_run" / "run" / "training_config.json").write_text(json.dumps({"speaker_id": 0, "learning_rate": 2e-5,
+                                                                                    "speaker_embedding_lr_ratio": 1.0}))
+    pd.read_csv(split_dir / "train_manifest.csv").to_csv(runs / "default_run" / "splits" / "train_manifest.csv", index=False)
+    config = tmp_path / "default.yaml"
+    config.write_text("output_dir: outputs/default_run/\nspeaker_id: 0\nlearning_rate: 0.00002\n"
+                      "speaker_embedding_lr_ratio: 50.0\n")
     experiments = tmp_path / "experiments.csv"
     pd.DataFrame([
-        {"experiment": "default", "speaker_id": 0, "freeze_mode": "none", "checkpoint": str(ckpt / "model_default.safetensors")},
-        {"experiment": "frozen", "speaker_id": 1, "freeze_mode": "freeze_text_encoder",
+        {"experiment": "default", "speaker_id": 0, "freeze_mode": "none", "config": str(config),
+         "checkpoint": str(ckpt / "model_default.safetensors")},
+        {"experiment": "frozen", "speaker_id": 1, "freeze_mode": "freeze_text_encoder", "config": "",
          "checkpoint": str(ckpt / "model_frozen.safetensors")},
     ]).to_csv(experiments, index=False)
     plan = tmp_path / "plan.json"
@@ -752,7 +768,7 @@ def test_evaluate_experiments_scores_resumes_and_reports(tmp_path, monkeypatch):
     results = tmp_path / "results"
     argv = ["--experiments", str(experiments), "--plan", str(plan), "--results_dir", str(results),
             "--base_model", str(tmp_path / "base"), "--manifest", str(split_dir / "test_manifest.csv"),
-            "--data_root", str(data_root), "--device", "cpu", "--limit", "2", "--skip_timing"]
+            "--data_root", str(data_root), "--device", "cpu", "--limit", "2", "--skip_timing", "--runs_dir", str(runs)]
     report = evaluate_experiments.main(argv)
 
     for system in ("default", "frozen", "ground_truth", "pretrained_spk0"):
@@ -762,13 +778,23 @@ def test_evaluate_experiments_scores_resumes_and_reports(tmp_path, monkeypatch):
     assert len(list((results / "frozen" / "prompts").glob("*.wav"))) == 12
     checks = pd.read_csv(results / "report" / "checks.csv").set_index("experiment")
     assert bool(checks.loc["frozen", "freeze_ok"]) and bool(checks.loc["default", "speaker_ok"])
+    assert checks.loc["default", "test_in_training"] == 0  # its own split holds none of the test sentences
+    assert "speaker_embedding_lr_ratio: run 1.0 vs config 50.0" in checks.loc["default", "settings_differ"]
+    assert checks.loc["frozen", "run_logs"] == "not found"
     text = report.read_text(encoding="utf-8")
     for expected in ("## Experiments", "## Checks", "## Overview", "## Freezing", "freezing_before_after.png",
-                     "| default | frozen |"):
+                     "| default | frozen |", "**Training logs.**", "No logs found for: frozen", "freezing_losses.png"):
         assert expected in text, expected
-    for name in ("all/comparison.png", "freezing/comparison.png", "freezing_before_after.png"):
+    for name in ("all/comparison.png", "freezing/comparison.png", "freezing_before_after.png", "freezing_losses.png"):
         assert (results / "report" / name).is_file(), name
+    assert json.loads((results / "default" / "summary.json").read_text())["test_set"]["overlap"]
 
     stamp = (results / "default" / "summary.json").stat().st_mtime
     evaluate_experiments.main(argv + ["--skip_checks"])  # finished systems are skipped
     assert (results / "default" / "summary.json").stat().st_mtime == stamp
+
+    (results / "report" / "checks.csv").write_text("")  # an interrupted run leaves it empty
+    test = pd.read_csv(split_dir / "test_manifest.csv")
+    test.iloc[::-1].to_csv(split_dir / "test_manifest.csv", index=False)  # other first-2 sentences: a new test set
+    evaluate_experiments.main(argv + ["--skip_checks", "--only", "default", "--skip_prompts"])
+    assert (results / "default" / "summary.json").stat().st_mtime != stamp  # re-scored, not reused

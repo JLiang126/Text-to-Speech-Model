@@ -1,12 +1,12 @@
-experiment,speaker_id,learning_rate,weight_fmaps,encoder_layerdrop,freeze_mode,use_linear_lr_scheduler,description,checkpoint
-no_droplayer,0,2e-5,1,0,none,true,Default configuration (baseline for every comparison),checkpoints/model_no_droplayer.safetensors
-original,0,2e-5,1,0.1,none,true,First configuration: text-encoder layer drop 0.1,checkpoints/model_original.safetensors
-best_speaker_embedding,7,2e-5,1,0,none,true,"Starts from speaker 7, ranked closest to LJ by ECAPA (low-pitched)",checkpoints/model_best_speaker_embedding.safetensors
-worst_speaker_embedding,24,2e-5,1,0,none,true,"Starts from speaker 24, ranked furthest from LJ by ECAPA (high-pitched)",checkpoints/model_worst_speaker_embedding.safetensors
-male_speaker,2,2e-5,1,0,none,true,Starts from speaker 2 (male),checkpoints/model_male_speaker.safetensors
-unfreeze_speech_embeddings_only,0,2e-5,1,0,unfreeze_speech_embeddings_only,false,Only the speaker embedding trains (constant learning rate),checkpoints/model_unfreeze_speech_embeddings_only.safetensors
-halve_learning_rate,0,1e-5,1,0,none,true,Peak learning rate 1e-5 (linear warm-up and decay),checkpoints/model_halve_learning_rate.safetensors
-double_learninge_rate,0,4e-5,1,0,none,true,Peak learning rate 4e-5 (linear warm-up and decay),checkpoints/model_double_learninge_rate.safetensors
-no_scheduler,0,2e-5,1,0,none,false,Constant learning rate 2e-5,checkpoints/model_no_scheduler.safetensors
-double_fmaps_weighting,0,2e-5,2,0,none,true,Feature-matching loss weight 2,checkpoints/model_double_fmaps_weighting.safetensors
-freeze_text_encoder,0,2e-5,1,0,freeze_text_encoder,true,Text encoder frozen,checkpoints/model_freeze_text_encoder.safetensors
+experiment,speaker_id,learning_rate,weight_fmaps,encoder_layerdrop,freeze_mode,use_linear_lr_scheduler,description,config,checkpoint
+no_droplayer,0,2e-5,1,0,none,true,Default configuration (baseline for every comparison),configs/no_droplayer.yaml,checkpoints/model_no_droplayer.safetensors
+original,0,2e-5,1,0.1,none,true,First configuration: text-encoder layer drop 0.1,configs/original.yaml,checkpoints/model_original.safetensors
+best_speaker_embedding,7,2e-5,1,0,none,true,"Starts from speaker 7, ranked closest to LJ by ECAPA (low-pitched)",configs/best_speaker_embedding.yaml,checkpoints/model_best_speaker_embedding.safetensors
+worst_speaker_embedding,24,2e-5,1,0,none,true,"Starts from speaker 24, ranked furthest from LJ by ECAPA (high-pitched)",configs/worst_speaker_embedding.yaml,checkpoints/model_worst_speaker_embedding.safetensors
+male_speaker,2,2e-5,1,0,none,true,Starts from speaker 2 (male),configs/male_speaker.yaml,checkpoints/model_male_speaker.safetensors
+unfreeze_speech_embeddings_only,0,2e-5,1,0,unfreeze_speech_embeddings_only,false,Only the speaker embedding trains (constant learning rate),configs/unfreeze_speech_embeddings_only.yaml,checkpoints/model_unfreeze_speech_embeddings_only.safetensors
+halve_learning_rate,0,1e-5,1,0,none,true,Peak learning rate 1e-5 (linear warm-up and decay),configs/halve_learning_rate.yaml,checkpoints/model_halve_learning_rate.safetensors
+double_learninge_rate,0,4e-5,1,0,none,true,Peak learning rate 4e-5 (linear warm-up and decay),configs/double_learninge_rate.yaml,checkpoints/model_double_learninge_rate.safetensors
+no_scheduler,0,2e-5,1,0,none,false,Constant learning rate 2e-5,configs/no_scheduler.yaml,checkpoints/model_no_scheduler.safetensors
+double_fmaps_weighting,0,2e-5,2,0,none,true,Feature-matching loss weight 2,configs/double_fmaps_weighting.yaml,checkpoints/model_double_fmaps_weighting.safetensors
+freeze_text_encoder,0,2e-5,1,0,freeze_text_encoder,true,Text encoder frozen,configs/freeze_text_encoder.yaml,checkpoints/model_freeze_text_encoder.safetensors

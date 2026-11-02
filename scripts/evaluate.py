@@ -35,6 +35,12 @@ Metrics (choose with --metrics, default all):
   utmos predicted naturalness, about 1-5 (higher is better)
   rtf   latency and real-time factor on the 12 fixed prompts (lower is faster)
 Always recorded: median pitch (f0_hz) of each sentence, and of its real recording (f0_ref_hz).
+
+Held-out guard: before scoring a model, the test sentences are checked against the training
+(and validation) manifests: by default the ones beside --manifest, or the run's own split
+given with --train_manifest. Any overlap stops the run, because a model that trained on a
+sentence scores it unrealistically well. summary.json records which sentences were scored
+(test_set: manifest, n and a fingerprint of the utterance IDs).
 """
 from __future__ import annotations
 
@@ -53,7 +59,7 @@ import pandas as pd  # noqa: E402
 
 from scripts.evaluation.audio import (EVAL_PEAK, EVAL_TRIM_DB, load_audio, prepare,  # noqa: E402
                                       resample, save_wav)
-from scripts.evaluation.manifest import load_manifest  # noqa: E402
+from scripts.evaluation.manifest import load_manifest, overlap_with, split_fingerprint  # noqa: E402
 from scripts.evaluation.metrics import (ASR_SR, SpeakerEncoder, UTMOSPredictor, WhisperASR,  # noqa: E402
                                         cosine_similarity, get_text_normaliser, mcd_dtw,
                                         word_char_errors)
@@ -81,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ref_manifest", default=None,
                    help="real clips for the speaker reference (default: train_manifest.csv beside --manifest)")
     p.add_argument("--n_ref", type=int, default=50, help="number of reference clips for the speaker centroid")
+    p.add_argument("--train_manifest", action="append", default=None,
+                   help="manifest(s) the model trained on; the test sentences must not be in them "
+                        "(default: train_manifest.csv and val_manifest.csv beside --manifest)")
+    p.add_argument("--allow_overlap", action="store_true",
+                   help="score even if test sentences are in a training manifest (not a held-out result)")
     p.add_argument("--data_root", default="dataset/LJSpeech-1.1", help="fallback folder for wav paths")
     p.add_argument("--metrics", default=",".join(ALL_METRICS), help=f"comma list from {ALL_METRICS}")
     p.add_argument("--whisper_model", default="small.en", help="Whisper size for WER (tiny.en ... large-v3)")
@@ -143,6 +154,31 @@ def corpus_rates(per_utt: pd.DataFrame, seed: int) -> Dict[str, Dict[str, float]
                                                per_utt[ref].to_numpy(dtype=float), seed=seed)
             rates[name] = {"value": point, "ci_low": lo, "ci_high": hi}
     return rates
+
+
+def describe_test_set(args, test: pd.DataFrame, is_model: bool) -> Dict[str, object]:
+    """Which sentences are scored, and how many of them are in a training manifest.
+    For a model, any overlap stops the run unless --allow_overlap."""
+    ids = test["utt_id"].astype(str).tolist()
+    info: Dict[str, object] = {"manifest": str(args.manifest), "n": len(ids), "fingerprint": split_fingerprint(ids),
+                               "overlap": {}}
+    manifest = Path(args.manifest).resolve()
+    candidates = args.train_manifest or [manifest.with_name(f"{s}_manifest.csv") for s in ("train", "val")]
+    for path in map(Path, candidates):
+        if not path.is_file():
+            if args.train_manifest:
+                raise SystemExit(f"--train_manifest {path} not found")
+            continue
+        if path.resolve() == manifest:
+            continue
+        info["overlap"][str(path)] = overlap_with(ids, path)
+    leaked = {k: v for k, v in info["overlap"].items() if v}
+    if leaked and is_model and not args.allow_overlap:
+        raise SystemExit("Not a held-out test: " + "; ".join(f"{n} of the {len(ids)} test sentences are in {k}"
+                                                             for k, n in leaked.items())
+                         + ". Score the test manifest of the split the model trained on "
+                           "(python scripts/data_checks.py --config <its config>), or pass --allow_overlap.")
+    return info
 
 
 def score_test_set(args, test: pd.DataFrame, synth: Optional[object], metrics: set,
@@ -246,13 +282,15 @@ def main(argv=None) -> Dict[str, object]:
         print(f"[info] wrote {out_dir}/latency_{tag}.json and rtf_runs_{tag}.csv")
         return {"latency": latency}
 
-    print(f"[info] {args.exp}: {len(test)} test sentences from {args.manifest} on {device}")
+    test_set = describe_test_set(args, test, is_model=synth is not None)
+    print(f"[info] {args.exp}: {len(test)} test sentences from {args.manifest} on {device} "
+          f"(fingerprint {test_set['fingerprint']}, overlap with training manifests: {test_set['overlap'] or 'not checked'})")
     per_utt = score_test_set(args, test, synth, metrics, device, out_dir, failures)
     per_utt.to_csv(out_dir / "per_utterance.csv", index=False)
     summary = {
         "experiment": args.exp, "ground_truth": bool(args.ground_truth), "step": step,
         "checkpoint": args.checkpoint or args.model, "config": args.config, "speaker_id": args.speaker_id,
-        "manifest": str(args.manifest), "n_utterances": int(len(per_utt)),
+        "manifest": str(args.manifest), "n_utterances": int(len(per_utt)), "test_set": test_set,
         "metrics": summarise(per_utt, args.seed), "corpus": corpus_rates(per_utt, args.seed),
         "latency": {tag: latency} if latency else {}, "device": describe_device(device),
         "settings": {"seed": args.seed, "frontend": synth.frontend if synth else None,
