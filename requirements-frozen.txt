@@ -1,0 +1,14 @@
+# Direct dependencies used by scripts/; pip resolves their transitive dependencies.
+# CUDA-tagged PyTorch wheels require an appropriate PyTorch package index.
+accelerate==1.15.0
+espeakng-loader==0.2.4
+matplotlib==3.11.1
+numba==0.66.0
+numpy==2.4.6
+pandas==2.3.3
+phonemizer==3.4.0
+PyYAML==6.0.3
+torch==2.13.0+cu130
+torchaudio==2.11.1
+tqdm==4.70.0
+transformers==5.14.1

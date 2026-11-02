@@ -3,7 +3,7 @@ from typing import Dict, Tuple
 import torch
 import torchaudio
 
-from scripts.DataLoader import DataConfig
+from scripts.DataConfig import DataConfig
 
 class AudioProcessor:
     """
@@ -64,7 +64,7 @@ class AudioProcessor:
 
         return waveform
 
-    def compute_spectrograms(self, waveform: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def compute_spectrograms(self, waveform: torch.Tensor, do_clamp=False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Computes the:
         - linear_spec : shape (513, Frames) — used by VITS PosteriorEncoder (enc_q)
@@ -83,7 +83,10 @@ class AudioProcessor:
             return_complex=True,
         )
 
-        linear_spec = torch.sqrt(torch.clamp(stft_complex.real ** 2 + stft_complex.imag ** 2, min=1e-9)).squeeze(0)
+        if do_clamp:
+            linear_spec = torch.sqrt(torch.clamp(stft_complex.real ** 2 + stft_complex.imag ** 2, min=1e-9)).squeeze(0)
+        else:
+            linear_spec = torch.sqrt(stft_complex.real ** 2 + stft_complex.imag ** 2 + 1e-6).squeeze(0)
         mel_spec = self.mel_scale.to(waveform.device)(linear_spec)
         log_mel = torch.log(torch.clamp(mel_spec, min=1e-5))
         return linear_spec, log_mel
