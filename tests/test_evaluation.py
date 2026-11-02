@@ -762,7 +762,8 @@ def test_evaluate_experiments_scores_resumes_and_reports(tmp_path, monkeypatch):
     plan = tmp_path / "plan.json"
     plan.write_text(json.dumps({"baseline": "default", "sections": [{
         "name": "freezing", "title": "Freezing", "systems": ["ground_truth", "pretrained_spk0", "default", "frozen"],
-        "pairs": [["default", "frozen"]], "before_after": [["pretrained_spk0", "default"]]}]}))
+        "pairs": [["default", "frozen"]], "before_after": [["pretrained_spk0", "default"]],
+        "extra_runs": {"default_again": "default_run"}}]}))
     for name, fake in (("WhisperASR", _FakeASR), ("SpeakerEncoder", _FakeEncoder), ("UTMOSPredictor", _FakeMOS)):
         monkeypatch.setattr(evaluate, name, fake)
     results = tmp_path / "results"
@@ -783,7 +784,8 @@ def test_evaluate_experiments_scores_resumes_and_reports(tmp_path, monkeypatch):
     assert checks.loc["frozen", "run_logs"] == "not found"
     text = report.read_text(encoding="utf-8")
     for expected in ("## Experiments", "## Checks", "## Overview", "## Freezing", "freezing_before_after.png",
-                     "| default | frozen |", "**Training logs.**", "No logs found for: frozen", "freezing_losses.png"):
+                     "| default | frozen |", "**Training logs.**", "No logs found for: frozen", "freezing_losses.png",
+                     "Logs only (no checkpoint scored): default_again", "| default_again | 3 |"):
         assert expected in text, expected
     for name in ("all/comparison.png", "freezing/comparison.png", "freezing_before_after.png", "freezing_losses.png"):
         assert (results / "report" / name).is_file(), name

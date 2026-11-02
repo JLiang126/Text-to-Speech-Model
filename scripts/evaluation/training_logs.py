@@ -48,14 +48,16 @@ def _history_dir(folder: Path) -> Optional[Path]:
 
 def find_run_folder(experiment: str, config: Optional[PathLike] = None,
                     runs_dir: Optional[PathLike] = "outputs") -> Optional[Path]:
-    """The folder holding this experiment's loss histories: the config's output_dir,
-    or a folder with that name or the experiment's name inside ``runs_dir``."""
+    """The folder holding this experiment's loss histories: ``<runs_dir>/<experiment>``, else the
+    folder named by the config's output_dir (inside ``runs_dir``, then as written). The experiment's
+    own name comes first because a config's output_dir can be reused by a later run with other
+    settings (e.g. the embedding-only YAML now points at a 50x-LR run)."""
     output_dir = config_output_dir(config)
     candidates: List[Path] = []
     if runs_dir is not None:
+        candidates.append(Path(runs_dir) / experiment)
         if output_dir is not None:
             candidates.append(Path(runs_dir) / output_dir.name)
-        candidates.append(Path(runs_dir) / experiment)
     if output_dir is not None:
         candidates.append(output_dir)
     for folder in candidates:
@@ -133,7 +135,7 @@ def plot_loss_curves(histories: Mapping[str, Tuple[Optional[pd.DataFrame], pd.Da
     import matplotlib.pyplot as plt
 
     losses = [l for l in losses if any(l in val.columns for _, val in histories.values())]
-    fig, axes = plt.subplots(1, len(losses), figsize=(4.2 * len(losses), 3.4), squeeze=False)
+    fig, axes = plt.subplots(1, len(losses), figsize=(4.2 * len(losses), 3.9), squeeze=False)
     colours = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     for ax, loss in zip(axes[0], losses):
         for i, (name, (train, val)) in enumerate(histories.items()):
@@ -145,11 +147,16 @@ def plot_loss_curves(histories: Mapping[str, Tuple[Optional[pd.DataFrame], pd.Da
         ax.set_title(LOSS_LABELS.get(loss, loss), fontsize=10, loc="left")
         ax.set_xlabel("epoch")
         ax.grid(True, alpha=0.3)
-    axes[0][0].legend(fontsize=8, frameon=False)
+    # legend below the panels, so it never covers a curve
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    ncol = min(len(labels), 5)
+    legend_rows = -(-len(labels) // ncol) if labels else 0
+    if labels:
+        fig.legend(handles, labels, loc="lower center", ncol=ncol, fontsize=8, frameon=False)
     if title:
         fig.suptitle(title + (" (solid = validation, dashed = training)" if show_training else ""),
                      x=0.01, ha="left", fontsize=10)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.06 * legend_rows + 0.02, 1, 0.97))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=200)

@@ -19,13 +19,16 @@
     {
       "name": "speaker_embedding",
       "title": "Does the starting speaker embedding matter?",
-      "description": "Speakers 7 and 24 were ranked closest and furthest to LJ by ECAPA on the pretrained voices; 7 is low-pitched and 24 high-pitched. Speaker 2 is male and speaker 0 is the default. The embedding-only run trains nothing but the speaker vector (constant learning rate), so comparing it with the constant-rate full run (no_scheduler) shows how much the rest of the model contributes.",
+      "description": "Speakers 7 and 24 were ranked closest and furthest to LJ by ECAPA on the pretrained voices; 7 is low-pitched and 24 high-pitched. Speaker 2 is male and speaker 0 is the default. The embedding-only run trains nothing but the speaker vector (constant learning rate, the same 2e-5 as the rest of the model in that run), so comparing it with the constant-rate full run (no_scheduler) shows how much the rest of the model contributes. Its training logs are shown with a repeat run and two runs whose speaker-embedding learning rate was 10x and 50x (the 50x run's folder is named 20xLR, but its training_config.json records 50); those two have no checkpoint to score.",
       "systems": ["ground_truth", "pretrained_spk0", "pretrained_spk7", "pretrained_spk24", "pretrained_spk2",
                   "no_droplayer", "best_speaker_embedding", "worst_speaker_embedding", "male_speaker",
                   "unfreeze_speech_embeddings_only", "no_scheduler"],
       "pairs": [["best_speaker_embedding", "worst_speaker_embedding"], ["no_droplayer", "best_speaker_embedding"],
                 ["no_droplayer", "worst_speaker_embedding"], ["no_droplayer", "male_speaker"],
                 ["pretrained_spk0", "unfreeze_speech_embeddings_only"], ["unfreeze_speech_embeddings_only", "no_scheduler"]],
+      "extra_runs": {"embedding_only_repeat_1x": "unfreeze_speech_embeddings_only2",
+                     "embedding_only_10x": "unfreeze_speech_embeddings_only_10xLR",
+                     "embedding_only_50x": "unfreeze_speech_embeddings_only_20xLR"},
       "before_after": [["pretrained_spk7", "best_speaker_embedding"], ["pretrained_spk24", "worst_speaker_embedding"],
                        ["pretrained_spk2", "male_speaker"], ["pretrained_spk0", "no_droplayer"],
                        ["pretrained_spk0", "unfreeze_speech_embeddings_only"]]

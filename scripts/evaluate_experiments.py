@@ -400,10 +400,14 @@ def losses_markdown(table: pd.DataFrame) -> str:
 
 
 def section_losses(members: Sequence[str], experiments: pd.DataFrame, runs_dir: Optional[str], report: Path,
-                   name: str, title: str) -> List[str]:
-    """Loss curves and table for the section's runs whose training logs are present."""
+                   name: str, title: str, extra_runs: Optional[Dict[str, str]] = None) -> List[str]:
+    """Loss curves and table for the section's runs whose training logs are present, plus
+    ``extra_runs`` ({label: run folder in runs_dir}): runs with logs but no checkpoint to score."""
     configs = {n: (experiments.loc[n].get("config") or None) for n in members if n in experiments.index}
     histories = training_logs.load_histories(configs, runs_dir)
+    for label, folder in (extra_runs or {}).items():
+        if runs_dir is not None and training_logs.find_run_folder(folder, None, runs_dir) is not None:
+            histories[label] = training_logs.load_history(Path(runs_dir) / folder)
     if not histories:
         return []
     table = training_logs.loss_table(histories)
@@ -416,6 +420,7 @@ def section_losses(members: Sequence[str], experiments: pd.DataFrame, runs_dir: 
             "negative slope over the last epochs means the run was still improving when it stopped; under a linear "
             "schedule the learning rate is near zero by then, so a flat end is not evidence of convergence."
             + (f" No logs found for: {', '.join(missing)}." if missing else "") + "\n",
+            *([f"Logs only (no checkpoint scored): {', '.join(extra_runs)}.\n"] if extra_runs else []),
             losses_markdown(table), f"\n![Loss curves]({name}_losses.png)\n"]
 
 
@@ -469,8 +474,10 @@ def build_report(args, plan: Dict[str, object], experiments: pd.DataFrame, resul
         md.append(f"## {section.get('title', section['name'])}\n")
         if section.get("description"):
             md.append(section["description"] + "\n")
+        losses = section_losses(section.get("systems", []), experiments, getattr(args, "runs_dir", None), report,
+                                section["name"], section.get("title", section["name"]), section.get("extra_runs"))
         if len(members) < 2:
-            md.append("_Not enough finished systems yet._\n")
+            md += ["_Not enough finished systems yet._\n"] + losses
             continue
         pairs = [p for p in section.get("pairs", []) if p[0] in folders and p[1] in folders]
         result = run_compare([folders[n] for n in members], pairs, report / section["name"])
@@ -480,8 +487,7 @@ def build_report(args, plan: Dict[str, object], experiments: pd.DataFrame, resul
         if section.get("before_after") and plot_before_after(section["before_after"], folders,
                                                               report / f"{section['name']}_before_after.png"):
             md.append(f"\n![Before vs after fine-tuning]({section['name']}_before_after.png)\n")
-        md += section_losses(section.get("systems", []), experiments, getattr(args, "runs_dir", None), report,
-                             section["name"], section.get("title", section["name"]))
+        md += losses
 
     listen = [n for n in names if (results / n / "prompts").is_dir()]
     if listen:
