@@ -190,6 +190,24 @@ def run_split_manifests(folder: Optional[Path]) -> List[Path]:
 
 
 # ------------------------------------------------------------------ steps 1-4
+# experiments.csv column -> training_config.json key, where the names differ
+CSV_SETTING_NAMES = {"use_linear_lr_scheduler": "use_linear_lr_schedule"}
+
+
+def claimed_settings(row: pd.Series) -> Dict[str, object]:
+    """What we say a run used: its YAML config (if listed), overridden by the settings columns of
+    its experiments.csv row, which is what the report tables show."""
+    claimed: Dict[str, object] = {}
+    if row.get("config") and Path(row["config"]).is_file():
+        import yaml
+        claimed = yaml.safe_load(Path(row["config"]).read_text(encoding="utf-8")) or {}
+    for column, value in row.items():
+        key = CSV_SETTING_NAMES.get(column, column)
+        if key in SETTING_KEYS and str(value).strip() != "":
+            claimed[key] = value
+    return claimed
+
+
 def training_record_checks(name: str, row: pd.Series, folder: Optional[Path], test_ids: Sequence[str]
                            ) -> Dict[str, object]:
     """From the run's own files: settings that differ from its config, and how many of the
@@ -198,10 +216,7 @@ def training_record_checks(name: str, row: pd.Series, folder: Optional[Path], te
         return {"run_logs": "not found", "settings_differ": "", "test_in_training": float("nan")}
     out: Dict[str, object] = {"run_logs": str(folder)}
     actual = training_logs.run_settings(folder)
-    claimed = {}
-    if row.get("config") and Path(row["config"]).is_file():
-        import yaml
-        claimed = yaml.safe_load(Path(row["config"]).read_text(encoding="utf-8")) or {}
+    claimed = claimed_settings(row)
     differ = training_logs.settings_mismatches(actual, claimed, SETTING_KEYS) if actual else {}
     out["settings_differ"] = "; ".join(f"{k}: run {a} vs config {b}" for k, (a, b) in differ.items()) \
         if actual else "no training_config.json"

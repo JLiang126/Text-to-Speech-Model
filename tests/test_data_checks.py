@@ -210,3 +210,16 @@ def test_speaker_table_reads_a_weights_file_without_building_the_model(tmp_path)
     save_file({"decoder.conv_pre.weight": torch.zeros(2)}, tmp_path / "single.safetensors")
     with pytest.raises(KeyError, match="single-speaker"):
         speaker_table(tmp_path / "single.safetensors", base_model="unused")
+
+
+def test_claimed_settings_come_from_the_table_and_override_the_yaml(tmp_path):
+    from scripts.evaluate_experiments import claimed_settings
+
+    config = tmp_path / "run.yaml"
+    config.write_text("learning_rate: 0.00002\nspeaker_embedding_lr_ratio: 50.0\nnum_train_epochs: 15\n")
+    row = pd.Series({"experiment": "x", "speaker_id": "7", "learning_rate": "4e-5", "use_linear_lr_scheduler": "true",
+                     "speaker_embedding_lr_ratio": "", "description": "ignored", "config": str(config)})
+    claimed = claimed_settings(row)
+    assert claimed["learning_rate"] == "4e-5" and claimed["speaker_id"] == "7"  # the table wins
+    assert claimed["use_linear_lr_schedule"] is not None and claimed["speaker_embedding_lr_ratio"] == 50.0  # blank: YAML
+    assert claimed["num_train_epochs"] == 15 and "description" not in claimed

@@ -229,5 +229,7 @@ results/**/wavs/
 results/**/prompts/
 results/**/embeddings.npz
 # training run folders: keep the logs, not the audio or per-epoch checkpoints
-outputs/**/listening_samples/
-outputs/**/intermediate_checkpoints/
+outputs*/**/listening_samples/
+outputs*/**/intermediate_checkpoints/
+# each run's copy of the split (identical to dataset/splits, about 4.5 MB per run)
+outputs*/**/splits/

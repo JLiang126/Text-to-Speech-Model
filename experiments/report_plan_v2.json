@@ -1,0 +1,135 @@
+{
+  "baseline": "best_speaker_embedding",
+  "timing_system": "best_speaker_embedding",
+  "order": [
+    "best_speaker_embedding",
+    "ground_truth",
+    "worst_speaker_embedding",
+    "unfreeze_speech_embeddings_only",
+    "unfreeze_speech_embeddings_only_WSE",
+    "best_speaker_embedding_10xLR",
+    "unfreeze_speech_embeddings_only_10xLR",
+    "unfreeze_speech_embeddings_only_WSE_10xLR",
+    "worst_speaker_embedding_10xLR",
+    "freeze_text_encoder",
+    "original_vits_config",
+    "freeze_text_encoder_10xLR",
+    "pretrained_spk7",
+    "pretrained_spk24"
+  ],
+  "sections": [
+    {
+      "name": "speaker_embedding",
+      "title": "Does the starting speaker matter, and is training the embedding alone enough?",
+      "description": "All runs: 4e-5 peak learning rate with linear warm-up and decay, 15 epochs. The base case starts from speaker 7 (closest to LJ by ECAPA, male); the comparison run starts from speaker 24 (furthest by ECAPA, female). Each is also trained with only its speaker embedding unfrozen. Each pair differs in one setting.",
+      "systems": [
+        "ground_truth",
+        "pretrained_spk7",
+        "pretrained_spk24",
+        "best_speaker_embedding",
+        "worst_speaker_embedding",
+        "unfreeze_speech_embeddings_only",
+        "unfreeze_speech_embeddings_only_WSE"
+      ],
+      "pairs": [
+        [
+          "best_speaker_embedding",
+          "worst_speaker_embedding"
+        ],
+        [
+          "best_speaker_embedding",
+          "unfreeze_speech_embeddings_only"
+        ],
+        [
+          "worst_speaker_embedding",
+          "unfreeze_speech_embeddings_only_WSE"
+        ],
+        [
+          "unfreeze_speech_embeddings_only",
+          "unfreeze_speech_embeddings_only_WSE"
+        ]
+      ],
+      "before_after": [
+        [
+          "pretrained_spk7",
+          "best_speaker_embedding"
+        ],
+        [
+          "pretrained_spk24",
+          "worst_speaker_embedding"
+        ],
+        [
+          "pretrained_spk7",
+          "unfreeze_speech_embeddings_only"
+        ],
+        [
+          "pretrained_spk24",
+          "unfreeze_speech_embeddings_only_WSE"
+        ]
+      ],
+      "speaker_vectors": true
+    },
+    {
+      "name": "embedding_learning_rate",
+      "title": "Does a 10x speaker-embedding learning rate change the picture?",
+      "description": "Each run against the same run with the speaker embedding's learning rate raised 10x (the rest of the model unchanged).",
+      "systems": [
+        "ground_truth",
+        "best_speaker_embedding",
+        "best_speaker_embedding_10xLR",
+        "worst_speaker_embedding",
+        "worst_speaker_embedding_10xLR",
+        "unfreeze_speech_embeddings_only",
+        "unfreeze_speech_embeddings_only_10xLR",
+        "unfreeze_speech_embeddings_only_WSE",
+        "unfreeze_speech_embeddings_only_WSE_10xLR",
+        "freeze_text_encoder",
+        "freeze_text_encoder_10xLR"
+      ],
+      "pairs": [
+        [
+          "best_speaker_embedding",
+          "best_speaker_embedding_10xLR"
+        ],
+        [
+          "worst_speaker_embedding",
+          "worst_speaker_embedding_10xLR"
+        ],
+        [
+          "unfreeze_speech_embeddings_only",
+          "unfreeze_speech_embeddings_only_10xLR"
+        ],
+        [
+          "unfreeze_speech_embeddings_only_WSE",
+          "unfreeze_speech_embeddings_only_WSE_10xLR"
+        ],
+        [
+          "freeze_text_encoder",
+          "freeze_text_encoder_10xLR"
+        ]
+      ],
+      "speaker_vectors": true
+    },
+    {
+      "name": "ruling_out",
+      "title": "Ruling out other influences: frozen text encoder and the original VITS recipe",
+      "description": "The base case against the same run with the text encoder frozen, and with the original VITS text-encoder layer drop of 0.1.",
+      "systems": [
+        "ground_truth",
+        "best_speaker_embedding",
+        "freeze_text_encoder",
+        "original_vits_config"
+      ],
+      "pairs": [
+        [
+          "best_speaker_embedding",
+          "freeze_text_encoder"
+        ],
+        [
+          "best_speaker_embedding",
+          "original_vits_config"
+        ]
+      ]
+    }
+  ]
+}
