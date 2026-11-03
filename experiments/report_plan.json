@@ -26,6 +26,7 @@
       "pairs": [["best_speaker_embedding", "worst_speaker_embedding"], ["no_droplayer", "best_speaker_embedding"],
                 ["no_droplayer", "worst_speaker_embedding"], ["no_droplayer", "male_speaker"],
                 ["pretrained_spk0", "unfreeze_speech_embeddings_only"], ["unfreeze_speech_embeddings_only", "no_scheduler"]],
+      "speaker_vectors": true,
       "extra_runs": {"embedding_only_repeat_1x": "unfreeze_speech_embeddings_only2",
                      "embedding_only_10x": "unfreeze_speech_embeddings_only_10xLR",
                      "embedding_only_50x": "unfreeze_speech_embeddings_only_20xLR"},

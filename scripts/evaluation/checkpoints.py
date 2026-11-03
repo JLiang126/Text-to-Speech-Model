@@ -10,12 +10,18 @@ Every run is compared with the pretrained weights it started from:
   and off again, which leaves float rounding of about 1e-7.
 
 The posterior encoder is only used in training, so its change does not affect synthesis.
+
+``speaker_embedding_change`` compares one speaker's vector before and after fine-tuning
+(relative L2 and cosine), with the reference scales needed to read the numbers.
 """
 from __future__ import annotations
 
-from typing import Dict, Iterable, Mapping, Optional
+from pathlib import Path
+from typing import Dict, Iterable, Mapping, Optional, Tuple, Union
 
 import numpy as np
+
+SPEAKER_KEY = "embed_speaker.weight"
 
 MODULES = ("text_encoder", "duration_predictor", "flow", "posterior_encoder", "decoder", "embed_speaker")
 UNCHANGED_REL = 1e-4      # relative change below this counts as unchanged
@@ -50,10 +56,84 @@ def module_changes(state: Mapping[str, np.ndarray], base: Mapping[str, np.ndarra
 
 def speaker_row_changes(state: Mapping[str, np.ndarray], base: Mapping[str, np.ndarray]) -> np.ndarray:
     """Relative change of every row of the speaker table (empty for single-speaker models)."""
-    if "embed_speaker.weight" not in base:
+    if SPEAKER_KEY not in base:
         return np.zeros(0)
-    delta = np.linalg.norm(state["embed_speaker.weight"] - base["embed_speaker.weight"], axis=1)
-    return delta / np.maximum(np.linalg.norm(base["embed_speaker.weight"], axis=1), 1e-12)
+    delta = np.linalg.norm(state[SPEAKER_KEY] - base[SPEAKER_KEY], axis=1)
+    return delta / np.maximum(np.linalg.norm(base[SPEAKER_KEY], axis=1), 1e-12)
+
+
+def speaker_embedding_change(after: np.ndarray, before: np.ndarray, speaker_id: int) -> Dict[str, float]:
+    """How far one speaker's vector moved in fine-tuning, and the scales to read that by.
+
+    ``after`` and ``before`` are speaker tables (n_speakers x dim) of the fine-tuned and the
+    pretrained model.
+    - ``rel_l2``: ||after_i - before_i|| / ||before_i||.
+    - ``cosine``: cosine(after_i, before_i); 1 = same direction. Unlike rel_l2 it ignores the
+      uniform shrink from weight decay.
+    - ``decay_rel_l2``: median rel_l2 of the other rows, which receive no gradient and only
+      shrink by weight decay: the change the optimiser makes without any training signal.
+    - ``move_vs_gap``: ||after_i - before_i|| / median_j ||before_j - before_i|| (j != i), the
+      move as a share of the typical distance between two different pretrained voices.
+    - ``nearest_pretrained``: the pretrained speaker closest (cosine) to after_i.
+    - ``closest_other_cosine``: cosine of before_i to its most similar other pretrained voice.
+    """
+    after, before = np.asarray(after, dtype=np.float64), np.asarray(before, dtype=np.float64)
+    if after.shape != before.shape or after.ndim != 2:
+        raise ValueError(f"speaker tables differ in shape: {after.shape} vs {before.shape}")
+    i = int(speaker_id)
+    if not 0 <= i < before.shape[0]:
+        raise ValueError(f"speaker_id {i} is outside the table (0..{before.shape[0] - 1})")
+    norms = np.maximum(np.linalg.norm(before, axis=1), 1e-12)
+    unit = before / norms[:, None]
+    others = np.array([j for j in range(before.shape[0]) if j != i])
+    delta = after[i] - before[i]
+    rel_rows = np.linalg.norm(after - before, axis=1) / norms
+    after_unit = after[i] / max(float(np.linalg.norm(after[i])), 1e-12)
+    gaps = np.linalg.norm(before[others] - before[i], axis=1)
+    return {"speaker_id": i, "norm_before": float(norms[i]), "norm_after": float(np.linalg.norm(after[i])),
+            "rel_l2": float(np.linalg.norm(delta) / norms[i]),
+            "cosine": float(after_unit @ unit[i]),
+            "decay_rel_l2": float(np.median(rel_rows[others])) if others.size else float("nan"),
+            "move_vs_gap": float(np.linalg.norm(delta) / np.median(gaps)) if others.size else float("nan"),
+            "nearest_pretrained": int(np.argmax(unit @ after_unit)),
+            "closest_other_cosine": float(np.max(unit[others] @ unit[i])) if others.size else float("nan")}
+
+
+def speaker_table(source: Union[str, Path], base_model: Optional[Union[str, Path]] = None) -> np.ndarray:
+    """The speaker table (n_speakers x dim) of a checkpoint: a bare weights file, a run folder,
+    a ``checkpoint-<step>`` folder or a hub id. Weights files are read directly (no model built)."""
+    from scripts.evaluation.synthesizer import (DEFAULT_BASE_MODEL, _load_state_dict, load_hf_vits,
+                                                resolve_hf_model)
+    base_model = base_model or DEFAULT_BASE_MODEL
+    _, weights = resolve_hf_model(source, base_model)
+    if weights is not None:
+        if weights.suffix == ".safetensors":
+            from safetensors import safe_open
+            with safe_open(str(weights), framework="pt") as f:
+                key = next((k for k in f.keys() if k.endswith(SPEAKER_KEY)), None)
+                if key is None:
+                    raise KeyError(f"{weights} has no {SPEAKER_KEY} (a single-speaker model?)")
+                return f.get_tensor(key).double().numpy()
+        state = _load_state_dict(weights)
+        key = next((k for k in state if k.endswith(SPEAKER_KEY)), None)
+        if key is None:
+            raise KeyError(f"{weights} has no {SPEAKER_KEY} (a single-speaker model?)")
+        return state[key].double().cpu().numpy()
+    model, _ = load_hf_vits(source, base_model)
+    return model.state_dict()[SPEAKER_KEY].double().cpu().numpy()
+
+
+def compare_speaker_embeddings(checkpoints: Mapping[str, Tuple[Union[str, Path], int]],
+                               base_model: Optional[Union[str, Path]] = None):
+    """``speaker_embedding_change`` for several checkpoints against the pretrained model.
+    ``checkpoints``: {name: (checkpoint, speaker_id)}. Returns a DataFrame, one row per checkpoint."""
+    import pandas as pd
+    from scripts.evaluation.synthesizer import DEFAULT_BASE_MODEL
+    base_model = base_model or DEFAULT_BASE_MODEL
+    before = speaker_table(base_model, base_model)
+    rows = [{"experiment": name, **speaker_embedding_change(speaker_table(path, base_model), before, sid)}
+            for name, (path, sid) in checkpoints.items()]
+    return pd.DataFrame(rows)
 
 
 def check_experiment(state: Mapping[str, np.ndarray], base: Mapping[str, np.ndarray],
@@ -69,6 +149,10 @@ def check_experiment(state: Mapping[str, np.ndarray], base: Mapping[str, np.ndar
                       next_row=runner_up, next_row_change=float(rows[runner_up]))
         dominant = rows[top] >= ROW_DOMINANCE * max(rows[runner_up], 1e-12)
         result["speaker_ok"] = bool(speaker_id is not None and top == int(speaker_id) and dominant)
+        if speaker_id is not None and 0 <= int(speaker_id) < rows.size:  # the configured row, before vs after
+            move = speaker_embedding_change(state[SPEAKER_KEY], base[SPEAKER_KEY], int(speaker_id))
+            result.update(speaker_rel_l2=move["rel_l2"], speaker_cosine=move["cosine"],
+                          speaker_move_vs_gap=move["move_vs_gap"], speaker_nearest=move["nearest_pretrained"])
     unchanged = [m for m, c in changes.items() if c < UNCHANGED_REL]
     result["unchanged_modules"] = ", ".join(unchanged) if unchanged else "none"
     expected = EXPECTED_UNCHANGED.get(str(freeze_mode).strip().lower())

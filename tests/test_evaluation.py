@@ -763,7 +763,7 @@ def test_evaluate_experiments_scores_resumes_and_reports(tmp_path, monkeypatch):
     plan.write_text(json.dumps({"baseline": "default", "sections": [{
         "name": "freezing", "title": "Freezing", "systems": ["ground_truth", "pretrained_spk0", "default", "frozen"],
         "pairs": [["default", "frozen"]], "before_after": [["pretrained_spk0", "default"]],
-        "extra_runs": {"default_again": "default_run"}}]}))
+        "extra_runs": {"default_again": "default_run"}, "speaker_vectors": True}]}))
     for name, fake in (("WhisperASR", _FakeASR), ("SpeakerEncoder", _FakeEncoder), ("UTMOSPredictor", _FakeMOS)):
         monkeypatch.setattr(evaluate, name, fake)
     results = tmp_path / "results"
@@ -780,12 +780,16 @@ def test_evaluate_experiments_scores_resumes_and_reports(tmp_path, monkeypatch):
     checks = pd.read_csv(results / "report" / "checks.csv").set_index("experiment")
     assert bool(checks.loc["frozen", "freeze_ok"]) and bool(checks.loc["default", "speaker_ok"])
     assert checks.loc["default", "test_in_training"] == 0  # its own split holds none of the test sentences
+    # the configured row's before/after comparison: the same row the checks found trained
+    assert checks.loc["frozen", "speaker_rel_l2"] == pytest.approx(checks.loc["frozen", "trained_row_change"])
+    assert -1 <= checks.loc["frozen", "speaker_cosine"] <= 1 and 0 <= checks.loc["frozen", "speaker_nearest"] < 4
     assert "speaker_embedding_lr_ratio: run 1.0 vs config 50.0" in checks.loc["default", "settings_differ"]
     assert checks.loc["frozen", "run_logs"] == "not found"
     text = report.read_text(encoding="utf-8")
     for expected in ("## Experiments", "## Checks", "## Overview", "## Freezing", "freezing_before_after.png",
                      "| default | frozen |", "**Training logs.**", "No logs found for: frozen", "freezing_losses.png",
-                     "Logs only (no checkpoint scored): default_again", "| default_again | 3 |"):
+                     "Logs only (no checkpoint scored): default_again", "| default_again | 3 |",
+                     "**How far did the speaker vector move?**", "| frozen | 1 |"):
         assert expected in text, expected
     for name in ("all/comparison.png", "freezing/comparison.png", "freezing_before_after.png", "freezing_losses.png"):
         assert (results / "report" / name).is_file(), name

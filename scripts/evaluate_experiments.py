@@ -424,6 +424,25 @@ def section_losses(members: Sequence[str], experiments: pd.DataFrame, runs_dir: 
             losses_markdown(table), f"\n![Loss curves]({name}_losses.png)\n"]
 
 
+def speaker_vectors_markdown(checks: Optional[pd.DataFrame], members: Sequence[str]) -> List[str]:
+    """How far each run's speaker vector moved (relative L2 and cosine, before vs after)."""
+    if checks is None or "speaker_cosine" not in checks.columns:
+        return []
+    rows = checks[checks["experiment"].isin(members)]
+    if rows.empty:
+        return []
+    lines = ["\n**How far did the speaker vector move?** The configured speaker's vector before and after "
+             "fine-tuning: relative L2 change, cosine similarity, and the move as a share of the median distance "
+             "between two different pretrained voices. Rows that get no gradient change by weight decay alone "
+             "(the \"next row\" in the checks table).\n",
+             "| experiment | speaker_id | relative L2 change | cosine (before, after) | share of the gap to another voice "
+             "| nearest pretrained voice now |", "|---|---|---|---|---|---|"]
+    for _, r in rows.iterrows():
+        lines.append(f"| {r['experiment']} | {r['speaker_id']} | {100 * r['speaker_rel_l2']:.2f}% | "
+                     f"{r['speaker_cosine']:.5f} | {100 * r['speaker_move_vs_gap']:.2f}% | {int(r['speaker_nearest'])} |")
+    return ["\n".join(lines) + "\n"]
+
+
 def config_markdown(experiments: pd.DataFrame) -> str:
     columns = [c for c in experiments.columns if c != "checkpoint"]
     lines = ["| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
@@ -487,6 +506,8 @@ def build_report(args, plan: Dict[str, object], experiments: pd.DataFrame, resul
         if section.get("before_after") and plot_before_after(section["before_after"], folders,
                                                               report / f"{section['name']}_before_after.png"):
             md.append(f"\n![Before vs after fine-tuning]({section['name']}_before_after.png)\n")
+        if section.get("speaker_vectors"):
+            md += speaker_vectors_markdown(checks, section.get("systems", []))
         md += losses
 
     listen = [n for n in names if (results / n / "prompts").is_dir()]

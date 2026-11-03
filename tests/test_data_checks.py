@@ -175,3 +175,38 @@ def test_training_logs_table_curves_and_settings(tmp_path):
     assert training_logs.settings_mismatches(settings, claimed, ("learning_rate", "speaker_embedding_lr_ratio",
                                                                  "freeze_mode")) == {
         "speaker_embedding_lr_ratio": (1.0, 50.0)}
+
+
+def test_speaker_embedding_change_reads_a_known_move():
+    from scripts.evaluation.checkpoints import speaker_embedding_change
+
+    rng = np.random.default_rng(0)
+    before = rng.standard_normal((6, 16))
+    after = before * 0.999  # weight decay only, every row
+    step = rng.standard_normal(16)
+    step -= (step @ before[2]) / (before[2] @ before[2]) * before[2]  # perpendicular to row 2
+    step *= 0.1 * np.linalg.norm(before[2]) / np.linalg.norm(step)   # 10% of its length
+    after[2] = before[2] + step
+    move = speaker_embedding_change(after, before, 2)
+    assert move["rel_l2"] == pytest.approx(0.1, rel=1e-9)
+    assert move["cosine"] == pytest.approx(1 / np.sqrt(1.01), rel=1e-9)  # perpendicular step of 10%
+    assert move["decay_rel_l2"] == pytest.approx(0.001, rel=1e-6)        # the untouched rows: decay only
+    gaps = np.linalg.norm(np.delete(before, 2, axis=0) - before[2], axis=1)
+    assert move["move_vs_gap"] == pytest.approx(np.linalg.norm(step) / np.median(gaps), rel=1e-9)
+    assert move["nearest_pretrained"] == 2
+    with pytest.raises(ValueError, match="outside"):
+        speaker_embedding_change(after, before, 6)
+    with pytest.raises(ValueError, match="shape"):
+        speaker_embedding_change(after[:5], before, 1)
+
+
+def test_speaker_table_reads_a_weights_file_without_building_the_model(tmp_path):
+    from safetensors.torch import save_file
+    from scripts.evaluation.checkpoints import speaker_table
+
+    table = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    save_file({"embed_speaker.weight": table, "decoder.conv_pre.weight": torch.zeros(2)}, tmp_path / "model.x.safetensors")
+    assert np.array_equal(speaker_table(tmp_path / "model.x.safetensors", base_model="unused"), table.numpy())
+    save_file({"decoder.conv_pre.weight": torch.zeros(2)}, tmp_path / "single.safetensors")
+    with pytest.raises(KeyError, match="single-speaker"):
+        speaker_table(tmp_path / "single.safetensors", base_model="unused")

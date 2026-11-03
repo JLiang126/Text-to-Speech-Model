@@ -13,6 +13,7 @@ controlled change. Owner: Adi.
 | `scripts/compare.py` | Combines several systems into the report table, paired significance tests and figures |
 | `scripts/evaluate_experiments.py` | Evaluates every experiment checkpoint in one resumable run and writes the report tables, figures and checks |
 | `scripts/data_checks.py` | Split and loader checks: metadata coverage, unique IDs, disjoint splits, every manifest file present and in spec, proportions, and every item of a batch in range. Also counts how many evaluated sentences were in a training split |
+| `scripts/compare_speaker_embeddings.py` | How far fine-tuning moved each run's speaker vector: relative L2 and cosine between the pretrained and fine-tuned vector, against the weight-decay floor and the distance between two different voices. The same numbers appear in `report/checks.csv` |
 | `scripts/rank_speakers.py` | Ranks the VCTK speakers by how close they sound to LJSpeech, with bootstrap uncertainty: picks the closest / median / furthest starting speaker for the speaker-similarity experiment |
 | `scripts/evaluation/` | The building blocks: `audio`, `manifest`, `metrics`, `timing`, `stats`, `synthesizer`, `text_normalise`, `speakers`, `prompts`, `checkpoints` (weight checks), `training_logs` (loss histories of the runs), plus `vctk_speakers.csv` (speaker index -> VCTK ID) |
 | `tests/` | `python -m pytest tests -q`. Runs offline. The official-format tests need `VITS_DIR` to point at the VITS code |
