@@ -1,0 +1,114 @@
+{
+  "experiment": "freeze_text_encoder",
+  "ground_truth": false,
+  "step": null,
+  "checkpoint": "checkpoints\\model_freeze_text_encoder.safetensors",
+  "config": null,
+  "speaker_id": 0,
+  "manifest": "dataset/splits/test_manifest.csv",
+  "n_utterances": 150,
+  "test_set": {
+    "manifest": "dataset/splits/test_manifest.csv",
+    "n": 150,
+    "fingerprint": "e705482d0bf0",
+    "overlap": {
+      "C:\\Users\\Admin\\Downloads\\GenAI assgn 3\\tts-eval\\dataset\\splits\\train_manifest.csv": 0,
+      "C:\\Users\\Admin\\Downloads\\GenAI assgn 3\\tts-eval\\dataset\\splits\\val_manifest.csv": 0
+    }
+  },
+  "metrics": {
+    "mcd_dtw": {
+      "mean": 3.3695974582681725,
+      "ci_low": 3.336002364803174,
+      "ci_high": 3.404125013745645,
+      "n": 150
+    },
+    "dur_ratio": {
+      "mean": 0.9037771462921425,
+      "ci_low": 0.8880090279152959,
+      "ci_high": 0.919794543964945,
+      "n": 150
+    },
+    "wer": {
+      "mean": 0.08361346002103169,
+      "ci_low": 0.06440096942569129,
+      "ci_high": 0.10506881280631145,
+      "n": 150
+    },
+    "cer": {
+      "mean": 0.03704350688434399,
+      "ci_low": 0.026736535106096478,
+      "ci_high": 0.049152970570589816,
+      "n": 150
+    },
+    "secs": {
+      "mean": 0.8508756673024332,
+      "ci_low": 0.8438797163137265,
+      "ci_high": 0.8572063722758814,
+      "n": 150
+    },
+    "secs_paired": {
+      "mean": 0.7731852359979458,
+      "ci_low": 0.7636544378616996,
+      "ci_high": 0.7820199975545781,
+      "n": 150
+    },
+    "utmos": {
+      "mean": 4.174791161219279,
+      "ci_low": 4.1385447400808335,
+      "ci_high": 4.208999200661977,
+      "n": 150
+    },
+    "f0_hz": {
+      "mean": 197.8457399613063,
+      "ci_low": 196.2345781597292,
+      "ci_high": 199.4490162064926,
+      "n": 150
+    }
+  },
+  "corpus": {
+    "wer": {
+      "value": 0.0702682281828485,
+      "ci_low": 0.05559812397958951,
+      "ci_high": 0.08648536640399009
+    },
+    "cer": {
+      "value": 0.03367277664630007,
+      "ci_low": 0.024305305675843138,
+      "ci_high": 0.045417025499846865
+    }
+  },
+  "latency": {},
+  "device": {
+    "device": "cpu",
+    "cpu": "Intel64 Family 6 Model 126 Stepping 5, GenuineIntel",
+    "torch_threads": 4,
+    "torch": "2.14.1+cpu",
+    "python": "3.13.16",
+    "os": "Windows-11-10.0.26300-SP0"
+  },
+  "settings": {
+    "seed": 1234,
+    "frontend": "training",
+    "whisper_model": "small.en",
+    "n_ref_clips": 50,
+    "peak": 0.95,
+    "trim_db": 40.0,
+    "noise_scale": 0.667,
+    "noise_scale_w": 0.8,
+    "length_scale": 1.0,
+    "expand_numbers": true
+  },
+  "unavailable_metrics": {},
+  "versions": {
+    "torch": "2.14.1",
+    "numpy": "2.5.4",
+    "librosa": "1.0.0",
+    "jiwer": "4.0.0",
+    "openai-whisper": "20250625",
+    "speechbrain": "1.1.2",
+    "phonemizer": "3.4.0",
+    "espeakng-loader": "0.2.4",
+    "inflect": "7.6.0"
+  }
+}

@@ -1,0 +1,119 @@
+{
+  "model": "ylacombe/vits-vctk-with-discriminator",
+  "n_speakers_in_model": 109,
+  "n_speakers_ranked": 108,
+  "excluded_untrained": [
+    108
+  ],
+  "n_utts": 5,
+  "manifest": "dataset/splits/train_manifest.csv",
+  "conditions": {
+    "closest": {
+      "speaker_index": 7,
+      "vctk_id": "p259",
+      "similarity": 0.1493511982995474,
+      "ci": [
+        0.10845253469199194,
+        0.19885818905323452
+      ],
+      "rank_ci": [
+        1.0,
+        14.0
+      ],
+      "p_closest": 0.359,
+      "p_furthest": 0.0,
+      "f0_median_hz": 117.59821599016306,
+      "mcd_db": NaN
+    },
+    "median": {
+      "speaker_index": 47,
+      "vctk_id": "p288",
+      "similarity": 0.045075374109929754,
+      "ci": [
+        0.010609923631031274,
+        0.0931772682046142
+      ],
+      "rank_ci": [
+        24.0,
+        79.0
+      ],
+      "p_closest": 0.0,
+      "p_furthest": 0.0,
+      "f0_median_hz": 192.06533628428758,
+      "mcd_db": NaN
+    },
+    "furthest": {
+      "speaker_index": 24,
+      "vctk_id": "p250",
+      "similarity": -0.11156173352099678,
+      "ci": [
+        -0.14442893253639597,
+        -0.08329290902701678
+      ],
+      "rank_ci": [
+        106.0,
+        108.0
+      ],
+      "p_closest": 0.0,
+      "p_furthest": 0.571,
+      "f0_median_hz": 200.8563096498937,
+      "mcd_db": NaN
+    }
+  },
+  "pitch_groups": {
+    "threshold_hz": 160.0,
+    "low": {
+      "n": 48,
+      "mean_similarity": 0.0618889625588547,
+      "closest": 7,
+      "closest_similarity": 0.1493511982995474,
+      "furthest": 69,
+      "furthest_similarity": -0.031052756192133234
+    },
+    "high": {
+      "n": 60,
+      "mean_similarity": 0.019108214461725354,
+      "closest": 12,
+      "closest_similarity": 0.14116305202059037,
+      "furthest": 24,
+      "furthest_similarity": -0.11156173352099678
+    }
+  },
+  "baselines": {
+    "real_vs_real": 0.6422124289833938,
+    "same_synthetic_speaker": 0.8002330944805032,
+    "different_synthetic_speakers": 0.14653817236336897
+  },
+  "reliability": {
+    "split_half_spearman": 0.746910933912563,
+    "spearman_brown": 0.8551219405785088
+  },
+  "agreement": {
+    "ecapa_paired_vs_centroid_spearman": 0.9876246820429277,
+    "ecapa_vs_mcd_spearman": NaN,
+    "mcd_n_utts": 3
+  },
+  "pitch": {
+    "lj_f0_median_hz": 201.49191071095854,
+    "spearman_similarity_vs_pitch_closeness": -0.4166261777511027,
+    "n_utts": 3
+  },
+  "embedding_norm": {
+    "trained_median": 7.087879180908203,
+    "untrained": [
+      4.697985649108887
+    ]
+  },
+  "settings": {
+    "seed": 1234,
+    "n_boot": 1000,
+    "device": "cpu",
+    "noise_scale": 0.667,
+    "noise_scale_w": 0.8,
+    "length_scale": 1.0,
+    "frontend": "hf",
+    "sample_rate": 22050,
+    "f0_threshold_hz": 160.0
+  },
+  "runtime_min": 0.0
+}
