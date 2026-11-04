@@ -180,7 +180,9 @@ These cover sentence-to-sentence variation, not training-run variation. That nee
 ## Notebook cells
 
 `55_A3.ipynb` runs these tools in place:
+- **Setup (after the imports):** points the phonemiser at the espeak-ng library bundled with `espeakng-loader`, so no system install is needed.
 - **1.1 (after the waveform and spectrogram cell):** the split and full-batch checks (`scripts/data_checks.py`).
+- **1.2.4:** the text-to-wav demo with `scripts/synth.py` and the submitted checkpoint (`FINAL_SYSTEM`, also used in 1.4.2).
 - **1.4.1:** the evaluation. By default it rebuilds the report from saved results; set `RUN_EVALUATION = True` to score. It shows the held-out check, the overview table, latency/RTF, and one cell per question with its paired tests, figures and validation losses.
 - **1.4.2:** the 12 prompts, with the submitted system's wavs copied to `wav_examples/` and side-by-side listening.
 
