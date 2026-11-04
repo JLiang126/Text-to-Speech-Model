@@ -1,0 +1,12 @@
+experiment,speaker_id,encoder_layerdrop,freeze_mode,speaker_embedding_lr_ratio
+best_speaker_embedding,7,0.0,none,1.0
+best_speaker_embedding_10xLR,7,0.0,none,10.0
+freeze_text_encoder,7,0.0,freeze_text_encoder,1.0
+freeze_text_encoder_10xLR,7,0.0,freeze_text_encoder,10.0
+original_vits_config,7,0.1,none,1.0
+unfreeze_speech_embeddings_only,7,0.0,unfreeze_speech_embeddings_only,1.0
+unfreeze_speech_embeddings_only_10xLR,7,0.0,unfreeze_speech_embeddings_only,10.0
+unfreeze_speech_embeddings_only_WSE,24,0.0,unfreeze_speech_embeddings_only,1.0
+unfreeze_speech_embeddings_only_WSE_10xLR,24,0.0,unfreeze_speech_embeddings_only,10.0
+worst_speaker_embedding,24,0.0,none,1.0
+worst_speaker_embedding_10xLR,24,0.0,none,10.0
