@@ -1,6 +1,6 @@
 # Fine-tuning experiments: evaluation report
 
-Generated 2026-11-04 08:15. Test sentences per system: 150 (`dataset/splits/test_manifest.csv`, test-set fingerprint e705482d0bf0). Base model: `ylacombe/vits-vctk-with-discriminator`.
+Generated 2026-11-04 12:33. Test sentences per system: 150 (`dataset\splits\test_manifest.csv`, test-set fingerprint e705482d0bf0). Base model: `ylacombe/vits-vctk-with-discriminator`.
 
 Every number is a mean with a 95% bootstrap CI over the test sentences; WER and CER are corpus rates. The ceiling is the real recordings (`ground_truth`); a floor is the pretrained model with a run's speaker index (`pretrained_spk<k>`). Paired tests compare B with A on the same sentences (B minus A, Wilcoxon with Holm correction across metrics, effect size d_z). Unfinished systems are left out: none.
 
