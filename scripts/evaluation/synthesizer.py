@@ -1,22 +1,15 @@
 """Text -> waveform with a trained VITS model (the one synthesis path used everywhere).
 
-Two checkpoint formats, one interface (``synthesize(text, seed)`` -> (waveform, timing),
-``sample_rate``, ``speaker_id``, ``n_speakers``):
-
-1. Official VITS format (``G_<step>.pth`` + JSON config): ``VITSSynthesizer``.
-   Model code: the official implementation (Kim, Kong & Son 2021,
-   https://github.com/jaywalnut310/vits, MIT licence), in the folder given by ``vits_dir``.
-   Text front-end: the repo's ``scripts/TextProcessor.py`` (the data loader's front-end),
-   or ``frontend="vits"`` for the official ``text`` module.
-2. Hugging Face format (``transformers.VitsModel``): ``HFVITSSynthesizer``. This is the
-   format finetune-hf-vits (Y. Lacombe, https://github.com/ylacombe/finetune-hf-vits,
-   reference copy in ``finetune-hf-vits-main/``) loads and saves, e.g. the pretrained
-   ``ylacombe/vits-vctk-with-discriminator``, a run's output folder, or one of its
-   ``checkpoint-<step>`` folders. Text front-end: the training data's, i.e.
-   ``clean_normalised_text`` and the fixed VCTK tokenizer from scripts/TextProcessor.py.
+Checkpoints are in the Hugging Face format (``transformers.VitsModel``) that finetune-hf-vits
+(Y. Lacombe, https://github.com/ylacombe/finetune-hf-vits, reference copy in ``finetune-hf-vits-main/``)
+loads and saves: the pretrained ``ylacombe/vits-vctk-with-discriminator``, a run's output folder, one of
+its ``checkpoint-<step>`` folders, or a bare weights file. ``HFVITSSynthesizer`` gives one interface,
+``synthesize(text, seed)`` -> (waveform, timing), with ``sample_rate``, ``speaker_id`` and ``n_speakers``.
+Its text front-end is the training data's: ``clean_normalised_text`` and the fixed VCTK tokenizer from
+scripts/TextProcessor.py.
 
 Nothing here changes a model; this module only loads checkpoints and runs inference.
-Before either front-end, ``normalise_input_text`` spells out numbers, money, % and &
+Before the front-end, ``normalise_input_text`` spells out numbers, money, % and &
 (otherwise digits are deleted; see text_normalise.py).
 
 Sampling: VITS is random at inference (noise in the prior and in the stochastic
@@ -26,13 +19,9 @@ checkpoint gives the same waveform.
 from __future__ import annotations
 
 import argparse
-import importlib
 import logging
-import os
 import re
-import sys
 import time
-import types
 import zlib
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
@@ -43,12 +32,12 @@ from scripts.evaluation.text_normalise import normalise_input_text
 
 PathLike = Union[str, Path]
 
-# Official VITS inference defaults (jaywalnut310/vits inference.ipynb; also the VitsConfig defaults)
+# VITS inference defaults (as in the original implementation and transformers' VitsConfig)
 NOISE_SCALE = 0.667
 NOISE_SCALE_W = 0.8
 LENGTH_SCALE = 1.0
 
-_STEP_PATTERNS = (re.compile(r"G_(\d+)\.pth$"), re.compile(r"checkpoint-(\d+)$"))
+_STEP_PATTERN = re.compile(r"checkpoint-(\d+)$")
 
 
 def seed_for(utt_id: str, base_seed: int = 1234) -> int:
@@ -57,32 +46,11 @@ def seed_for(utt_id: str, base_seed: int = 1234) -> int:
 
 
 def checkpoint_step(path: Optional[PathLike]) -> Optional[int]:
-    """Training step from a checkpoint name: G_10000.pth or checkpoint-10000 -> 10000."""
+    """Training step from a checkpoint folder name: checkpoint-10000 -> 10000."""
     if not path:
         return None
-    name = Path(str(path).rstrip("/\\")).name
-    for pattern in _STEP_PATTERNS:
-        match = pattern.search(name)
-        if match:
-            return int(match.group(1))
-    return None
-
-
-def import_vits(vits_dir: PathLike):
-    """Imports the official VITS ``models`` and ``utils`` modules from ``vits_dir``."""
-    vits_dir = Path(vits_dir).resolve()
-    if not (vits_dir / "models.py").is_file():
-        raise FileNotFoundError(f"No VITS code at {vits_dir} (expected models.py). "
-                                f"Pass --vits_dir or set VITS_DIR to the vits-main folder.")
-    if str(vits_dir) not in sys.path:
-        sys.path.insert(0, str(vits_dir))
-    try:
-        importlib.import_module("monotonic_align")  # compiled Cython, only used during training
-    except ImportError:
-        # Inference never runs monotonic alignment search, so a placeholder lets
-        # evaluation run without compiling the Cython extension.
-        sys.modules["monotonic_align"] = types.ModuleType("monotonic_align")
-    return importlib.import_module("models"), importlib.import_module("utils")
+    match = _STEP_PATTERN.search(Path(str(path).rstrip("/\\")).name)
+    return int(match.group(1)) if match else None
 
 
 def _use_bundled_espeak() -> None:
@@ -106,14 +74,14 @@ def _load_state_dict(checkpoint_path: PathLike) -> Dict[str, object]:
     try:
         checkpoint = torch.load(str(checkpoint_path), map_location="cpu", weights_only=True)
     except Exception:
-        # Official VITS checkpoints also pickle the optimiser state; only load files you trust.
+        # Some .pth files pickle more than tensors (e.g. optimiser state); only load files you trust.
         checkpoint = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
     state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
     return _strip_module_prefix(state)
 
 
 class _Synthesizer:
-    """What both formats share: speaker-ID validation and input-text preparation."""
+    """Speaker-ID validation and input-text preparation."""
 
     n_speakers = 0
     expand_numbers = True
@@ -139,103 +107,6 @@ class _Synthesizer:
 
     def prepare_text(self, text: str) -> str:
         return normalise_input_text(text) if self.expand_numbers else text
-
-
-# ------------------------------------------------------------ official VITS format
-class VITSSynthesizer(_Synthesizer):
-    """Loads an official-format VITS generator checkpoint and turns text into a waveform."""
-
-    def __init__(self, config_path: PathLike, checkpoint_path: PathLike, vits_dir: PathLike = "vits-main",
-                 device: str = "cpu", speaker_id: Optional[int] = None, frontend: str = "repo",
-                 noise_scale: float = NOISE_SCALE, noise_scale_w: float = NOISE_SCALE_W,
-                 length_scale: float = LENGTH_SCALE, expand_numbers: bool = True, strict: bool = True):
-        import torch
-
-        models, utils = import_vits(vits_dir)
-        self.hps = utils.get_hparams_from_file(str(config_path))
-        self.sample_rate = int(self.hps.data.sampling_rate)
-        self.device = device
-        self.noise_scale, self.noise_scale_w, self.length_scale = noise_scale, noise_scale_w, length_scale
-        self.frontend = frontend
-        self.expand_numbers = expand_numbers
-        self._torch = torch
-        self._init_frontend()
-
-        state = _load_state_dict(checkpoint_path)
-        n_vocab = int(state["enc_p.emb.weight"].shape[0])
-        if n_vocab != self.vocab_size:
-            raise ValueError(
-                f"Checkpoint expects {n_vocab} text symbols but the '{frontend}' front-end has "
-                f"{self.vocab_size}. Token IDs would point at the wrong embeddings; fix the symbol "
-                f"table so it matches the checkpoint (see tests/test_text_frontend.py).")
-        self.n_speakers = int(state["emb_g.weight"].shape[0]) if "emb_g.weight" in state else 0
-        self.speaker_id = speaker_id  # validated by the setter
-
-        self.model = models.SynthesizerTrn(
-            n_vocab, self.hps.data.filter_length // 2 + 1,
-            self.hps.train.segment_size // self.hps.data.hop_length,
-            n_speakers=self.n_speakers, **self.hps.model).to(device).eval()
-        result = self.model.load_state_dict(state, strict=False)
-        if strict and (result.missing_keys or result.unexpected_keys):
-            raise RuntimeError(f"Checkpoint/config mismatch. Missing: {list(result.missing_keys)[:10]} "
-                               f"Unexpected: {list(result.unexpected_keys)[:10]} "
-                               f"(is --config the one this checkpoint was trained with?)")
-        self.checkpoint_path = str(checkpoint_path)
-
-    def _init_frontend(self) -> None:
-        # phonemizer warns "words count mismatch" whenever punctuation is preserved; harmless here.
-        logging.getLogger("phonemizer").setLevel(logging.ERROR)
-        add_blank = bool(getattr(self.hps.data, "add_blank", True))
-        if self.frontend == "repo":
-            from scripts.TextProcessor import TextProcessor
-            self.text_processor = TextProcessor(add_blank=add_blank)
-            self.vocab_size = self.text_processor.vocab_size
-        elif self.frontend == "vits":
-            _use_bundled_espeak()
-            commons = importlib.import_module("commons")
-            text_module = importlib.import_module("text")
-            symbols = importlib.import_module("text.symbols").symbols
-            cleaners = list(self.hps.data.text_cleaners)
-
-            def encode(t: str):
-                ids = text_module.text_to_sequence(t, cleaners)
-                return commons.intersperse(ids, 0) if add_blank else ids
-
-            self._vits_encode = encode
-            self.vocab_size = len(symbols)
-        else:
-            raise ValueError("frontend must be 'repo' or 'vits'")
-
-    def text_to_ids(self, text: str):
-        text = self.prepare_text(text)
-        if self.frontend == "repo":
-            return self.text_processor.text_to_sequence(text)
-        return self._torch.LongTensor(self._vits_encode(text))
-
-    def speaker_table(self) -> Optional[np.ndarray]:
-        """The speaker embedding matrix (n_speakers x dim), or None for single-speaker models."""
-        if not self.n_speakers:
-            return None
-        return self.model.emb_g.weight.detach().float().cpu().numpy()
-
-    def synthesize(self, text: str, seed: Optional[int] = 1234) -> Tuple[np.ndarray, Dict[str, float]]:
-        """Returns (waveform float32 at ``self.sample_rate``, timing info)."""
-        torch = self._torch
-        t0 = time.perf_counter()
-        ids = self.text_to_ids(text)
-        t1 = time.perf_counter()
-        if seed is not None:
-            torch.manual_seed(int(seed))  # seeds the CPU and every CUDA device
-        with torch.inference_mode():
-            x = ids.unsqueeze(0).to(self.device)
-            x_lengths = torch.LongTensor([ids.size(0)]).to(self.device)
-            sid = torch.LongTensor([self.speaker_id]).to(self.device) if self.speaker_id is not None else None
-            audio = self.model.infer(x, x_lengths, sid=sid, noise_scale=self.noise_scale,
-                                     noise_scale_w=self.noise_scale_w,
-                                     length_scale=self.length_scale)[0][0, 0]
-            audio = audio.float().cpu().numpy()  # .cpu() waits for the GPU to finish
-        t2 = time.perf_counter()
-        return audio, {"frontend_s": t1 - t0, "model_s": t2 - t1, "n_tokens": int(ids.size(0))}
 
 
 # ------------------------------------------------------------ Hugging Face format
@@ -444,37 +315,22 @@ class HFVITSSynthesizer(_Synthesizer):
 
 
 # ------------------------------------------------------------ one way in for every script
-def load_synthesizer(model: Optional[PathLike] = None, config: Optional[PathLike] = None,
-                     checkpoint: Optional[PathLike] = None, vits_dir: PathLike = "vits-main",
-                     frontend: str = "repo", base_model: Optional[PathLike] = None, **kwargs) -> _Synthesizer:
-    """``model`` -> Hugging Face format; ``config`` + ``checkpoint`` -> official VITS format."""
-    if model and (config or checkpoint):
-        raise ValueError("Give either --model (Hugging Face format) or --config/--checkpoint "
-                         "(official VITS format), not both.")
-    if model:
-        return HFVITSSynthesizer(model, base_model=base_model or DEFAULT_BASE_MODEL, **kwargs)
-    if config and checkpoint:
-        return VITSSynthesizer(config, checkpoint, vits_dir=vits_dir, frontend=frontend, **kwargs)
-    raise ValueError("No model given: pass --model (Hugging Face format) or --config and "
-                     "--checkpoint (official VITS format).")
+def load_synthesizer(model: PathLike, base_model: Optional[PathLike] = None, **kwargs) -> HFVITSSynthesizer:
+    """A synthesizer for a Hugging Face-format model (hub id, run folder, checkpoint folder or weights file)."""
+    if not model:
+        raise ValueError("No model given: pass --model.")
+    return HFVITSSynthesizer(model, base_model=base_model or DEFAULT_BASE_MODEL, **kwargs)
 
 
 def add_model_arguments(parser: argparse.ArgumentParser, with_speaker: bool = True) -> None:
     """The model-selection options shared by synth.py, evaluate.py and rank_speakers.py."""
-    g = parser.add_argument_group("model (give --model, or --config and --checkpoint)")
+    g = parser.add_argument_group("model")
     g.add_argument("--model", help="Hugging Face-format VITS: a hub id (e.g. ylacombe/vits-vctk-with-discriminator), "
                                    "a finetune-hf-vits output folder, one of its checkpoint-<step> folders, "
-                                   "or a bare weights file such as model_no_droplayer.safetensors")
+                                   "or a bare weights file such as model.best_speaker_embedding.safetensors")
     g.add_argument("--base_model", default=DEFAULT_BASE_MODEL,
                    help="where config and tokenizer come from when --model is a bare weights file "
                         f"(default: {DEFAULT_BASE_MODEL})")
-    g.add_argument("--config", help="official VITS format: JSON config the checkpoint was trained with")
-    g.add_argument("--checkpoint", help="official VITS format: generator checkpoint G_<step>.pth")
-    g.add_argument("--vits_dir", default=os.environ.get("VITS_DIR", "vits-main"),
-                   help="official VITS code folder (default: $VITS_DIR or ./vits-main)")
-    g.add_argument("--frontend", choices=["repo", "vits"], default="repo",
-                   help="official format only: repo = scripts/TextProcessor.py (same as training); "
-                        "vits = official text module")
     if with_speaker:
         g.add_argument("--speaker_id", type=int, default=None,
                        help="speaker index for multi-speaker checkpoints: the one the LJSpeech clips were "
@@ -482,12 +338,10 @@ def add_model_arguments(parser: argparse.ArgumentParser, with_speaker: bool = Tr
 
 
 def model_given(args: argparse.Namespace) -> bool:
-    return bool(args.model or (args.config and args.checkpoint))
+    return bool(args.model)
 
 
-def synthesizer_from_args(args: argparse.Namespace, device: str, **kwargs) -> _Synthesizer:
+def synthesizer_from_args(args: argparse.Namespace, device: str, **kwargs) -> HFVITSSynthesizer:
     """Builds the synthesizer chosen with the add_model_arguments options."""
     kwargs.setdefault("speaker_id", getattr(args, "speaker_id", None))
-    return load_synthesizer(model=args.model, config=args.config, checkpoint=args.checkpoint,
-                            vits_dir=args.vits_dir, frontend=args.frontend, device=device,
-                            base_model=getattr(args, "base_model", None), **kwargs)
+    return load_synthesizer(model=args.model, device=device, base_model=getattr(args, "base_model", None), **kwargs)

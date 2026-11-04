@@ -33,9 +33,6 @@ import pandas as pd  # noqa: E402
 
 from scripts.evaluation.manifest import split_fingerprint  # noqa: E402
 
-SPLITS = ("train", "val", "test")
-
-
 def check_metadata_coverage(data_root) -> Dict[str, int]:
     """Every metadata.csv entry must have its wav file. build_splits skips missing files
     silently, so an incomplete download would quietly produce a different split."""

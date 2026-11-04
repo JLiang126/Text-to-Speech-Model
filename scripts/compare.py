@@ -12,7 +12,6 @@ Writes to --out:
                                95% CI, Wilcoxon p (raw and Holm-adjusted across metrics),
                                Cohen's d_z, and a plain-language verdict
   comparison.png               dot plot with 95% CIs, one panel per metric
-  learning_curves.png          metric vs training step (only if an experiment was scored at >= 2 steps)
 
 Without --pair, every pair of non-ground-truth systems is compared.
 """
@@ -221,50 +220,6 @@ def plot_comparison(systems: List[System], path: Path) -> bool:
     return True
 
 
-def plot_learning_curves(systems: List[System], path: Path) -> bool:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    groups: Dict[str, List[System]] = {}
-    for s in systems:
-        if not s.is_reference and s.step is not None and s.summary:
-            groups.setdefault(s.name, []).append(s)
-    groups = {k: sorted(v, key=lambda s: s.step) for k, v in groups.items() if len({s.step for s in v}) >= 2}
-    if not groups:
-        return False
-    references = [s for s in systems if s.is_reference]
-    panels = [p for p in QUALITY_PANELS
-              if any(not np.isnan(s.value(p[0])[0]) for g in groups.values() for s in g)]
-    if not panels:
-        return False
-    fig, axes = plt.subplots(1, len(panels), figsize=(3.2 * len(panels), 3.2), facecolor=SURFACE)
-    axes = np.atleast_1d(axes)
-    for ax, (key, title, scale, lower_better) in zip(axes, panels):
-        _style(ax)
-        ax.grid(axis="y", color=GRID, linewidth=0.8)
-        for color, (name, runs) in zip(SERIES, groups.items()):
-            steps = [s.step for s in runs]
-            vals = np.array([s.value(key) for s in runs]) * scale
-            ax.fill_between(steps, vals[:, 1], vals[:, 2], color=color, alpha=0.15, linewidth=0)
-            ax.plot(steps, vals[:, 0], color=color, linewidth=2, marker="o", markersize=5, label=name)
-            ax.annotate(name, (steps[-1], vals[-1, 0]), xytext=(4, 0), textcoords="offset points",
-                        fontsize=8.5, color=INK_2, va="center")
-        for ref, style in zip(references, ("--", ":")):
-            point = ref.value(key)[0] * scale
-            if not np.isnan(point):
-                ax.axhline(point, color=REFERENCE, linewidth=1.2, linestyle=style, label=ref.label)
-        ax.set_title(f"{title} ({'lower' if lower_better else 'higher'} is better)", fontsize=9.5,
-                     color=INK, loc="left")
-        ax.set_xlabel("training step", fontsize=9, color=INK_2)
-        ax.margins(x=0.15)  # room for the direct label at the end of each line
-    axes[0].legend(fontsize=8, frameon=False, labelcolor=INK_2)
-    fig.tight_layout()
-    fig.savefig(path, dpi=200, facecolor=SURFACE)
-    plt.close(fig)
-    return True
-
-
 def to_markdown(df: pd.DataFrame) -> str:
     header = "| " + " | ".join(df.columns) + " |"
     rule = "|" + "|".join(["---"] * len(df.columns)) + "|"
@@ -320,9 +275,8 @@ def main(argv: Optional[List[str]] = None) -> Dict[str, object]:
         if s.name not in latest or (s.step or 0) >= (latest[s.name].step or 0):
             latest[s.name] = s
     wrote_plot = plot_comparison(list(latest.values()), out / "comparison.png")
-    wrote_curves = plot_learning_curves(systems, out / "learning_curves.png")
     written = ["comparison_table.csv", "comparison_table.md"] + (["paired_tests.csv"] if not tests.empty else []) \
-        + (["comparison.png"] if wrote_plot else []) + (["learning_curves.png"] if wrote_curves else [])
+        + (["comparison.png"] if wrote_plot else [])
     print(f"[info] wrote to {out}: {', '.join(written)}")
     return {"table": table, "tests": tests}
 

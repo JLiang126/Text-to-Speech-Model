@@ -20,8 +20,7 @@ Cross-check a few speakers with more sentences of MCD, in a separate folder:
   python scripts/rank_speakers.py --n_utts 5 --speakers 7,24,47 --mcd_utts 5 --out_dir results/speaker_check
 
 The model defaults to the checkpoint fine-tuning starts from
-(ylacombe/vits-vctk-with-discriminator, downloaded on first use). Official VITS format:
-  --config vits-main/configs/vctk_base.json --checkpoint checkpoints/pretrained_vctk.pth
+(ylacombe/vits-vctk-with-discriminator, downloaded on first use).
 
 Writes to --out_dir (default results/speaker_ranking/):
   speaker_ranking.csv   one row per speaker index, closest first: mean paired cosine with
@@ -243,7 +242,7 @@ def main(argv=None) -> Dict[str, object]:
     synth = synthesizer_from_args(args, device, speaker_id=0)
     if synth.n_speakers == 0:
         raise SystemExit("This checkpoint is single-speaker; there are no speakers to rank.")
-    model_name = str(args.model or args.checkpoint)
+    model_name = str(args.model)
     speakers = parse_speakers(args.speakers, synth.n_speakers)
     manifest = load_manifest(args.manifest, args.data_root)
     # one fixed shuffle: the first N sentences are the same for any --n_utts >= N, so a run can be extended

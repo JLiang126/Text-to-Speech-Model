@@ -13,11 +13,8 @@ Run from the repo root:
   python scripts/evaluate.py --exp expA --model runs/expA --speaker_id <ID>
   python scripts/evaluate.py --exp expA --model runs/expA/checkpoint-2000 --speaker_id <ID> \
       --out_dir results/expA_step2000
-  # official VITS format
-  python scripts/evaluate.py --exp expA --config configs/expA.json \
-      --checkpoint checkpoints/expA/G_10000.pth --speaker_id <ID> --out_dir results/expA_step10000
   # CPU timing for the same system (adds latency_cpu.json, leaves the other results alone)
-  python scripts/evaluate.py --exp expA ... --out_dir results/expA_step10000 --metrics rtf --device cpu
+  python scripts/evaluate.py --exp expA ... --out_dir results/expA_step2000 --metrics rtf --device cpu
   # quick smoke test: 5 sentences, metrics that need no downloads
   python scripts/evaluate.py --exp expA ... --limit 5 --metrics mcd,rtf
 
@@ -244,7 +241,7 @@ def main(argv=None) -> Dict[str, object]:
     if unknown:
         raise SystemExit(f"Unknown metrics {sorted(unknown)}; choose from {ALL_METRICS}")
     if not args.ground_truth and not model_given(args):
-        raise SystemExit("Checkpoint systems need --model, or --config and --checkpoint (or use --ground_truth).")
+        raise SystemExit("Checkpoint systems need --model (or use --ground_truth).")
     if args.ground_truth and metrics == {"rtf"}:
         raise SystemExit("Ground truth has no synthesis to time; drop --metrics rtf.")
 
@@ -263,7 +260,7 @@ def main(argv=None) -> Dict[str, object]:
     need_test_set = bool(metrics & PER_UTTERANCE_METRICS) or ("rtf" in metrics and args.rtf_texts == "test")
     test = load_manifest(args.manifest, args.data_root, args.limit) if need_test_set else None
     failures: Dict[str, str] = {}
-    step = args.step if args.step is not None else checkpoint_step(args.checkpoint or args.model)
+    step = args.step if args.step is not None else checkpoint_step(args.model)
 
     latency = None
     if "rtf" in metrics and synth is not None:
@@ -289,7 +286,7 @@ def main(argv=None) -> Dict[str, object]:
     per_utt.to_csv(out_dir / "per_utterance.csv", index=False)
     summary = {
         "experiment": args.exp, "ground_truth": bool(args.ground_truth), "step": step,
-        "checkpoint": args.checkpoint or args.model, "config": args.config, "speaker_id": args.speaker_id,
+        "checkpoint": args.model, "speaker_id": args.speaker_id,
         "manifest": str(args.manifest), "n_utterances": int(len(per_utt)), "test_set": test_set,
         "metrics": summarise(per_utt, args.seed), "corpus": corpus_rates(per_utt, args.seed),
         "latency": {tag: latency} if latency else {}, "device": describe_device(device),

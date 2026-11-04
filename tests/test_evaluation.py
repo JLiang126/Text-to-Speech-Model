@@ -1,10 +1,8 @@
 """Tests for the evaluation package. Run from the repo root: ``python -m pytest tests -q``.
 
-None of these need internet access. The VITS tests run only when the official VITS
-code is available (``VITS_DIR`` environment variable, or ./vits-main).
+None of these need internet access: the models are tiny random ones built on the fly.
 """
 import json
-import os
 import time
 from pathlib import Path
 
@@ -260,8 +258,7 @@ def test_vctk_speaker_table_lists_the_trained_indices():
     assert (table["n_train_utts"] > 0).all()
 
 
-def test_checkpoint_step_from_both_formats():
-    assert checkpoint_step("checkpoints/expA/G_10000.pth") == 10000
+def test_checkpoint_step_from_the_folder_name():
     assert checkpoint_step("runs/expA/checkpoint-2000") == 2000
     assert checkpoint_step("runs/expA/checkpoint-2000/") == 2000
     assert checkpoint_step("runs/expA") is None and checkpoint_step(None) is None
@@ -360,67 +357,12 @@ def test_compare_builds_table_tests_and_figures(tmp_path):
     out = tmp_path / "comparison"
     result = compare.main([str(tmp_path / d) for d in ("pretrained", "expA_1000", "expA_2000", "expB_2000")]
                           + ["--pair", "expA@2000", "expB", "--out", str(out)])
-    for name in ("comparison_table.csv", "comparison_table.md", "paired_tests.csv", "comparison.png",
-                 "learning_curves.png"):
+    for name in ("comparison_table.csv", "comparison_table.md", "paired_tests.csv", "comparison.png"):
         assert (out / name).is_file(), name
     assert "RTF CPU" in result["table"].columns
     mcd = result["tests"].query("metric == 'mcd_dtw'").iloc[0]
     assert mcd["verdict"] == "expA@2000 better"  # expB has higher (worse) MCD on every sentence
     assert {"wilcoxon_p_holm", "cohens_dz", "better_if"} <= set(result["tests"].columns)
-
-
-# ------------------------------------------------------- VITS synthesis
-def _vits_dir():
-    for candidate in (os.environ.get("VITS_DIR"), "vits-main"):
-        if candidate and (Path(candidate) / "models.py").is_file():
-            return Path(candidate)
-    return None
-
-
-needs_vits = pytest.mark.skipif(_vits_dir() is None, reason="official VITS code not found (set VITS_DIR)")
-
-
-def _random_checkpoint(tmp_path, name, vocab_offset=0):
-    """A random-weight multi-speaker VITS generator saved in the official checkpoint format."""
-    import torch
-    from scripts.TextProcessor import TextProcessor
-    from scripts.evaluation.synthesizer import import_vits
-
-    vits_dir = _vits_dir()
-    models, utils = import_vits(vits_dir)
-    config = vits_dir / "configs" / "vctk_base.json"
-    hps = utils.get_hparams_from_file(str(config))
-    torch.manual_seed(0)
-    net = models.SynthesizerTrn(TextProcessor().vocab_size + vocab_offset, hps.data.filter_length // 2 + 1,
-                                hps.train.segment_size // hps.data.hop_length,
-                                n_speakers=hps.data.n_speakers, **hps.model)
-    path = tmp_path / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"model": net.state_dict(), "iteration": 0}, path)
-    return config, path
-
-
-@needs_vits
-def test_vits_synthesis_is_seeded_and_validates_inputs(tmp_path):
-    from scripts.evaluation.synthesizer import VITSSynthesizer
-
-    config, ckpt = _random_checkpoint(tmp_path, "G_0.pth")
-    synth = VITSSynthesizer(config, ckpt, vits_dir=_vits_dir(), device="cpu", speaker_id=0)
-    a1, info = synth.synthesize("Hello world.", seed=7)
-    a2, _ = synth.synthesize("Hello world.", seed=7)
-    a3, _ = synth.synthesize("Hello world.", seed=8)
-    assert a1.ndim == 1 and a1.size > 0 and info["n_tokens"] > 0
-    assert np.array_equal(a1, a2) and not np.array_equal(a1, a3)
-    # digits are spelled out, not dropped
-    assert len(synth.text_to_ids("I have 3 cats.")) > len(synth.text_to_ids("I have cats."))
-
-    with pytest.raises(ValueError, match="multi-speaker"):
-        VITSSynthesizer(config, ckpt, vits_dir=_vits_dir(), device="cpu", speaker_id=None)
-    with pytest.raises(ValueError, match="between 0 and"):
-        VITSSynthesizer(config, ckpt, vits_dir=_vits_dir(), device="cpu", speaker_id=500)
-    _, bad = _random_checkpoint(tmp_path, "G_bad.pth", vocab_offset=1)
-    with pytest.raises(ValueError, match="symbols"):
-        VITSSynthesizer(config, bad, vits_dir=_vits_dir(), device="cpu", speaker_id=0)
 
 
 # ------------------------------------------- Hugging Face format (finetune-hf-vits)
@@ -495,8 +437,8 @@ def test_hf_synthesis_is_seeded_and_reads_training_checkpoints(tmp_path):
         HFVITSSynthesizer(tmp_path / "run", speaker_id=None)
     with pytest.raises(ValueError, match="between 0 and"):
         HFVITSSynthesizer(tmp_path / "run", speaker_id=4)
-    with pytest.raises(ValueError, match="not both"):
-        load_synthesizer(model=tmp_path / "run", config="x.json", speaker_id=1)
+    with pytest.raises(ValueError, match="No model"):
+        load_synthesizer(model=None, speaker_id=1)
 
 
 class _FakeEncoder:  # spectral-shape "embedding": no download needed
@@ -590,39 +532,17 @@ def test_evaluate_runs_a_hf_training_checkpoint(tmp_path):
     assert summary["metrics"]["mcd_dtw"]["n"] == 2
 
 
-@needs_vits
-def test_repo_frontend_gives_the_same_token_ids_as_official_vits():
-    """With the corrected symbol table, TextProcessor reproduces the official VITS front-end
-    (english_cleaners2 + espeak + blanks) token for token on ordinary sentences, i.e. the
-    pretrained checkpoint receives exactly the input format it was trained on."""
-    pytest.importorskip("unidecode")  # the official cleaners import it
-    import importlib
-    from scripts.TextProcessor import TextProcessor
-    from scripts.evaluation.synthesizer import _use_bundled_espeak, import_vits
-
-    import_vits(_vits_dir())
-    _use_bundled_espeak()
-    official_text = importlib.import_module("text")
-    commons = importlib.import_module("commons")
-    processor = TextProcessor(add_blank=True)
-    for sentence in ("The birch canoe slid on the smooth planks.",
-                     "It was the appropriate size to contain, in disassembled form,",
-                     "Did you really expect the report to be finished before the end of the week?"):
-        official = commons.intersperse(official_text.text_to_sequence(sentence, ["english_cleaners2"]), 0)
-        assert processor.text_to_sequence(sentence).tolist() == official, sentence
-
-
-@needs_vits
+@needs_transformers
 def test_evaluate_end_to_end_and_timing_only_run(tmp_path):
     from scripts import evaluate
 
     data_root, split_dir = _fake_dataset(tmp_path)
-    config, ckpt = _random_checkpoint(tmp_path, "ckpt/G_1500.pth")
+    model = _tiny_hf_model(tmp_path / "runs" / "expA")
+    _training_checkpoint(model, tmp_path / "runs" / "expA" / "checkpoint-1500")
     out = tmp_path / "results" / "expA"
-    common = ["--exp", "expA", "--config", str(config), "--checkpoint", str(ckpt), "--speaker_id", "0",
-              "--vits_dir", str(_vits_dir()), "--manifest", str(split_dir / "test_manifest.csv"),
-              "--data_root", str(data_root), "--device", "cpu", "--out_dir", str(out),
-              "--n_warmup", "1", "--n_repeats", "1", "--rtf_texts", "test"]
+    common = ["--exp", "expA", "--model", str(tmp_path / "runs" / "expA" / "checkpoint-1500"), "--speaker_id", "0",
+              "--manifest", str(split_dir / "test_manifest.csv"), "--data_root", str(data_root), "--device", "cpu",
+              "--out_dir", str(out), "--n_warmup", "1", "--n_repeats", "1", "--rtf_texts", "test"]
     summary = evaluate.main(common + ["--metrics", "mcd,rtf"])
     assert summary["step"] == 1500 and summary["n_utterances"] == 3
     assert summary["metrics"]["mcd_dtw"]["n"] == 3 and "cpu" in summary["latency"]

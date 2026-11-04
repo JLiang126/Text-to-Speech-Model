@@ -5,7 +5,7 @@ Modules
 audio           Audio loading, resampling and the shared evaluation preprocessing.
 manifest        Reads the split manifests written by ``scripts/DataLoader.build_splits``.
 text_normalise  Spells out numbers/money/%/& so arbitrary input text keeps its numbers.
-synthesizer     Text -> waveform with a trained VITS model, official or Hugging Face format (seeded, validated).
+synthesizer     Text -> waveform with a trained Hugging Face-format VITS model (seeded, validated).
 metrics         MCD-DTW, WER/CER (Whisper), speaker similarity (ECAPA), UTMOS.
 checkpoints     Checks that a fine-tuned checkpoint changed what its experiment config says.
 speakers        Reference voice centroid and the VCTK speaker ranking (with bootstrap uncertainty).

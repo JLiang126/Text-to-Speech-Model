@@ -474,7 +474,7 @@ def build_report(args, plan: Dict[str, object], experiments: pd.DataFrame, resul
     summaries = {n: json.loads((f / "summary.json").read_text(encoding="utf-8")) for n, f in folders.items()}
     n_sentences = sorted({s.get("n_utterances") for s in summaries.values()})
     test_sets = sorted({str((s.get("test_set") or {}).get("fingerprint")) for s in summaries.values()})
-    md = [f"# Fine-tuning experiments: evaluation report\n",
+    md = ["# Fine-tuning experiments: evaluation report\n",
           f"Generated {datetime.now():%Y-%m-%d %H:%M}. Test sentences per system: "
           f"{', '.join(str(n) for n in n_sentences) or '-'} (`{args.manifest}`, test-set fingerprint "
           f"{', '.join(test_sets) or '-'}). Base model: `{args.base_model}`.\n",

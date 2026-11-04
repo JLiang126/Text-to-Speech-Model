@@ -9,13 +9,8 @@ Run from the repo root:
   # the 12 fixed qualitative prompts -> wav_examples/expA_01.wav ... expA_12.wav (+ expA_prompts.json)
   python scripts/synth.py --prompts --exp expA --model runs/expA --speaker_id <ID> --out_dir wav_examples
 
-  # official VITS format instead of --model
-  python scripts/synth.py --text "Hello world." --config configs/expA.json \
-      --checkpoint checkpoints/expA/G_latest.pth --speaker_id <ID>
-
 --speaker_id is only for multi-speaker checkpoints (e.g. the VCTK-pretrained model); use the ID
 the LJSpeech clips were fine-tuned with. Digits, money, % and & are spelled out before phonemisation.
-The official VITS code folder defaults to $VITS_DIR or ./vits-main.
 """
 from __future__ import annotations
 
@@ -61,7 +56,7 @@ def resolve_device(requested: str) -> str:
 def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
     if not model_given(args):
-        raise SystemExit("Pass --model, or --config and --checkpoint.")
+        raise SystemExit("Pass --model.")
     synth = synthesizer_from_args(args, resolve_device(args.device), noise_scale=args.noise_scale,
                                   noise_scale_w=args.noise_scale_w, length_scale=args.length_scale)
     if args.text is not None:
@@ -79,7 +74,7 @@ def main(argv=None) -> None:
         index.append({"file": path.name, "category": category, "text": text,
                       "spoken_text": synth.prepare_text(text)})  # after numbers are spelled out
         print(f"{path.name}  [{category}]  {text}")
-    meta = {"experiment": args.exp, "checkpoint": args.checkpoint or args.model, "seed": args.seed,
+    meta = {"experiment": args.exp, "checkpoint": args.model, "seed": args.seed,
             "speaker_id": args.speaker_id, "prompts": index}
     (out_dir / f"{args.exp}_prompts.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
