@@ -12,7 +12,7 @@ controlled change. Owner: Adi.
 | `scripts/evaluate.py` | Scores one system on the test split. Writes per-sentence metrics, a summary with 95% CIs, and latency/RTF |
 | `scripts/compare.py` | Combines several systems into a results table, paired significance tests and a figure |
 | `scripts/evaluate_experiments.py` | Evaluates every experiment of a round in one resumable run and writes the report tables, figures and checks |
-| `scripts/report_figures.py` | The report's two summary figures: every round-2 run before and after fine-tuning, and the losses by epoch |
+| `scripts/report_summary.py` | The summary tables and figures of notebook section 1.4.1 and the report: every round-2 system, what each one-setting change did, the round-1 learning rates, every run before and after fine-tuning, and the losses by epoch |
 | `scripts/pretrained_validation_losses.py` | Epoch 0 of the loss curves: the pretrained model's losses on the round-2 validation split, through `train_model.py`'s own validation pass |
 | `scripts/data_checks.py` | Split and loader checks: metadata coverage, unique IDs, disjoint splits, every manifest file present and in spec, proportions, and every item of a batch in range. Also counts how many evaluated sentences were in a training split |
 | `scripts/compare_speaker_embeddings.py` | How far fine-tuning moved each run's speaker vector: relative L2 and cosine between the pretrained and fine-tuned vector, against the weight-decay floor and the distance between two different voices. The same numbers appear in `report/checks.csv` |
@@ -36,10 +36,10 @@ controlled change. Owner: Adi.
    - writes `report/report.md` with the experiment table, the checks, an overview, one section per question (table, figure, paired tests), a before-vs-after figure, and each section's validation losses from the training logs.
 3. **Resume:** a system counts as finished only if it was scored on exactly the same sentences (`summary.json` stores a fingerprint of the test IDs), so results from another split are re-scored, never reused. `--report_only` rebuilds the report from what has finished.
 4. **New checkpoints:** add a row to the round's table (speaker_id, settings and a `description` for the report) and the name to a section of its report plan.
-5. **Report figures:**
+5. **Summary figures** (notebook 1.4.1 and the report; the notebook also shows the summary tables):
    ```bash
    python scripts/pretrained_validation_losses.py --speaker_ids 7 24   # once: epoch 0, about 10-20 min on a CPU
-   python scripts/report_figures.py                                    # results/experiments_v2/report/figures/
+   python scripts/report_summary.py                                    # results/experiments_v2/report/figures/
    ```
 
 ## Checkpoints
@@ -156,7 +156,7 @@ These cover sentence-to-sentence variation, not training-run variation, which wo
 - `latency_<cpu|cuda>.json` and `rtf_runs_<cpu|cuda>.csv` (round 1's timed system).
 - `wavs/` and `prompts/`: the synthesised test sentences and prompts. git ignores them, because they are regenerated from the checkpoints.
 
-and `report/`: `report.md`, `checks.csv`, one folder per question (`comparison_table.md`, `paired_tests.csv`, `comparison.png`), the loss tables and figures, and for round 2 `figures/` (the report's summary figures).
+and `report/`: `report.md`, `checks.csv`, one folder per question (`comparison_table.md`, `paired_tests.csv`, `comparison.png`), the loss tables and figures, and for round 2 `figures/` (`before_after.png` and `losses.png`, the summary figures of notebook 1.4.1 and the report).
 
 `results/speaker_ranking/` (from `rank_speakers.py`): `speaker_ranking.csv` (one row per speaker index, closest first), `summary.json` (picks, reliability, pitch groups, settings) and `speaker_ranking.png`.
 
@@ -166,8 +166,8 @@ and `report/`: `report.md`, `checks.csv`, one folder per question (`comparison_t
 - **Setup (after the imports):** points the phonemiser at the espeak-ng library bundled with `espeakng-loader`, so no system install is needed.
 - **1.1 (after the waveform and spectrogram cell):** the split and full-batch checks (`scripts/data_checks.py`).
 - **1.2.4:** the text-to-wav demo with `scripts/synth.py` and the submitted run (`FINAL_SYSTEM`, also used in 1.4.2). It skips synthesis when the checkpoint is not downloaded.
-- **1.4.1:** the evaluation. By default it rebuilds the reports from saved results; set `RUN_EVALUATION = True` to score. It shows the held-out check, the overview table, latency/RTF, one cell per question with its paired tests, figures and validation losses, and the report's two summary figures.
-- **1.4.2:** the 12 prompts, with the submitted system's wavs copied to `wav_examples/` and side-by-side listening.
+- **1.4.1:** the evaluation. By default it rebuilds the reports from saved results; set `RUN_EVALUATION = True` to score. It shows the held-out check, every round-2 system (Table 1) with latency/RTF, what each one-setting change did (Table 2), the two summary figures, and the round-1 learning rates (Table 3), all from `scripts/report_summary.py`.
+- **1.4.2:** the 12 prompts, with the submitted system's wavs copied to `wav_examples/`, and the long-sentence prompt for W, B and E side by side.
 
 ## Known limitations
 
