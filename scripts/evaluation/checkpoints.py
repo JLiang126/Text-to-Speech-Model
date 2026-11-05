@@ -16,8 +16,7 @@ The posterior encoder is only used in training, so its change does not affect sy
 """
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Dict, Iterable, Mapping, Optional, Tuple, Union
+from typing import Dict, Iterable, Mapping, Optional
 
 import numpy as np
 
@@ -97,43 +96,6 @@ def speaker_embedding_change(after: np.ndarray, before: np.ndarray, speaker_id: 
             "move_vs_gap": float(np.linalg.norm(delta) / np.median(gaps)) if others.size else float("nan"),
             "nearest_pretrained": int(np.argmax(unit @ after_unit)),
             "closest_other_cosine": float(np.max(unit[others] @ unit[i])) if others.size else float("nan")}
-
-
-def speaker_table(source: Union[str, Path], base_model: Optional[Union[str, Path]] = None) -> np.ndarray:
-    """The speaker table (n_speakers x dim) of a checkpoint: a bare weights file, a run folder,
-    a ``checkpoint-<step>`` folder or a hub id. Weights files are read directly (no model built)."""
-    from scripts.evaluation.synthesizer import (DEFAULT_BASE_MODEL, _load_state_dict, load_hf_vits,
-                                                resolve_hf_model)
-    base_model = base_model or DEFAULT_BASE_MODEL
-    _, weights = resolve_hf_model(source, base_model)
-    if weights is not None:
-        if weights.suffix == ".safetensors":
-            from safetensors import safe_open
-            with safe_open(str(weights), framework="pt") as f:
-                key = next((k for k in f.keys() if k.endswith(SPEAKER_KEY)), None)
-                if key is None:
-                    raise KeyError(f"{weights} has no {SPEAKER_KEY} (a single-speaker model?)")
-                return f.get_tensor(key).double().numpy()
-        state = _load_state_dict(weights)
-        key = next((k for k in state if k.endswith(SPEAKER_KEY)), None)
-        if key is None:
-            raise KeyError(f"{weights} has no {SPEAKER_KEY} (a single-speaker model?)")
-        return state[key].double().cpu().numpy()
-    model, _ = load_hf_vits(source, base_model)
-    return model.state_dict()[SPEAKER_KEY].double().cpu().numpy()
-
-
-def compare_speaker_embeddings(checkpoints: Mapping[str, Tuple[Union[str, Path], int]],
-                               base_model: Optional[Union[str, Path]] = None):
-    """``speaker_embedding_change`` for several checkpoints against the pretrained model.
-    ``checkpoints``: {name: (checkpoint, speaker_id)}. Returns a DataFrame, one row per checkpoint."""
-    import pandas as pd
-    from scripts.evaluation.synthesizer import DEFAULT_BASE_MODEL
-    base_model = base_model or DEFAULT_BASE_MODEL
-    before = speaker_table(base_model, base_model)
-    rows = [{"experiment": name, **speaker_embedding_change(speaker_table(path, base_model), before, sid)}
-            for name, (path, sid) in checkpoints.items()]
-    return pd.DataFrame(rows)
 
 
 def check_experiment(state: Mapping[str, np.ndarray], base: Mapping[str, np.ndarray],

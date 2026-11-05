@@ -200,18 +200,6 @@ def test_speaker_embedding_change_reads_a_known_move():
         speaker_embedding_change(after[:5], before, 1)
 
 
-def test_speaker_table_reads_a_weights_file_without_building_the_model(tmp_path):
-    from safetensors.torch import save_file
-    from scripts.evaluation.checkpoints import speaker_table
-
-    table = torch.arange(12, dtype=torch.float32).reshape(3, 4)
-    save_file({"embed_speaker.weight": table, "decoder.conv_pre.weight": torch.zeros(2)}, tmp_path / "model.x.safetensors")
-    assert np.array_equal(speaker_table(tmp_path / "model.x.safetensors", base_model="unused"), table.numpy())
-    save_file({"decoder.conv_pre.weight": torch.zeros(2)}, tmp_path / "single.safetensors")
-    with pytest.raises(KeyError, match="single-speaker"):
-        speaker_table(tmp_path / "single.safetensors", base_model="unused")
-
-
 def test_claimed_settings_come_from_the_table_and_override_the_yaml(tmp_path):
     from scripts.evaluate_experiments import claimed_settings
 

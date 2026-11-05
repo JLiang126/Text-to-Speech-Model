@@ -15,7 +15,6 @@ controlled change. Owner: Adi.
 | `scripts/report_summary.py` | The summary tables and figures of notebook section 1.4.1 and the report: every round-2 system, what each one-setting change did, the round-1 learning rates, every run before and after fine-tuning, and the losses by epoch |
 | `scripts/pretrained_validation_losses.py` | Epoch 0 of the loss curves: the pretrained model's losses on the round-2 validation split, through `train_model.py`'s own validation pass |
 | `scripts/data_checks.py` | Split and loader checks: metadata coverage, unique IDs, disjoint splits, every manifest file present and in spec, proportions, and every item of a batch in range. Also counts how many evaluated sentences were in a training split |
-| `scripts/compare_speaker_embeddings.py` | How far fine-tuning moved each run's speaker vector: relative L2 and cosine between the pretrained and fine-tuned vector, against the weight-decay floor and the distance between two different voices. The same numbers appear in `report/checks.csv` |
 | `scripts/rank_speakers.py` | Ranks the VCTK speakers by how close they sound to LJSpeech, with bootstrap uncertainty; it picked the starting speakers 7 (closest) and 24 (furthest) |
 | `scripts/evaluation/` | The building blocks: `audio`, `manifest`, `metrics`, `timing`, `stats`, `synthesizer`, `text_normalise`, `speakers`, `prompts`, `checkpoints` (weight checks), `training_logs` (loss histories of the runs), plus `vctk_speakers.csv` (speaker index -> VCTK ID) |
 | `tests/` | `python -m pytest tests -q`. Runs offline, on tiny random models |
@@ -165,8 +164,8 @@ and `report/`: `report.md`, `checks.csv`, one folder per question (`comparison_t
 `55_A3.ipynb` runs these tools in place:
 - **Setup (after the imports):** points the phonemiser at the espeak-ng library bundled with `espeakng-loader`, so no system install is needed.
 - **1.1 (after the waveform and spectrogram cell):** the split and full-batch checks (`scripts/data_checks.py`).
-- **1.2.4:** the text-to-wav demo with `scripts/synth.py` and the submitted run (`FINAL_SYSTEM`, also used in 1.4.2). It skips synthesis when the checkpoint is not downloaded.
-- **1.4.1:** the evaluation. By default it rebuilds the reports from saved results; set `RUN_EVALUATION = True` to score. It shows the held-out check, every round-2 system (Table 1) with latency/RTF, what each one-setting change did (Table 2), the two summary figures, and the round-1 learning rates (Table 3), all from `scripts/report_summary.py`.
+- **1.2.4:** the text-to-wav demo with `scripts/synth.py` and the submitted run (`FINAL_SYSTEM`, also used in 1.4.2). Without the checkpoint, it plays the saved `wav_examples/demo.wav`.
+- **1.4.1:** the evaluation. By default it rebuilds the reports from saved results; set `RUN_EVALUATION = True` to score. It shows the held-out check, every round-2 system (Table 1) with latency/RTF, what each one-setting change did (Table 2), the two summary figures, and the round-1 learning rates (Table 3), all from `scripts/report_summary.py`, then a short summary of what the results show.
 - **1.4.2:** the 12 prompts, with the submitted system's wavs copied to `wav_examples/`, and the long-sentence prompt for W, B and E side by side.
 
 ## Known limitations

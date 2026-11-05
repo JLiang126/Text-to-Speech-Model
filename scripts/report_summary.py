@@ -46,9 +46,10 @@ EMBEDDING_ONLY = [
 RUNS = FULL + EMBEDDING_ONLY
 RUN_NAME = {rid: run for rid, run, _, _ in RUNS}
 SPEAKER = {"B": 7, "W": 24, "B10": 7, "W10": 24, "F": 7, "F10": 7, "O": 7, "E": 7, "EW": 24, "E10": 7, "EW10": 24}
-REFERENCES = [("", "ground_truth", "Real LJ recordings"), ("", "pretrained_spk7", "Pretrained, speaker 7 (before fine-tuning)"),
+REFERENCES = [("", "ground_truth", "Real LJ recordings"),
+              ("", "pretrained_spk7", "Pretrained, speaker 7 (before fine-tuning)"),
               ("", "pretrained_spk24", "Pretrained, speaker 24 (before fine-tuning)")]
-# (A, B, what B changes): each run against the run it changes one setting of
+# (first run, second run, what the second run changes): each run against the run it changes one setting of
 COMPARISONS = [("B", "W", "starts from speaker 24 instead of 7"), ("B", "E", "trains only the speaker embedding"),
                ("W", "EW", "trains only the speaker embedding"), ("B", "B10", "10× embedding learning rate"),
                ("W", "W10", "10× embedding learning rate"), ("E", "E10", "10× embedding learning rate"),
@@ -87,7 +88,7 @@ def results_frame(results: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-TEXT_COLUMNS = ("ID", "Run", "Change", "What B changes", "Schedule")
+TEXT_COLUMNS = ("ID", "Run", "Runs", "What changes", "Schedule")
 
 
 def _styled(frame: pd.DataFrame, formats: Dict[str, str]):
@@ -142,38 +143,39 @@ def _paired(results: Path, sections) -> pd.DataFrame:
 
 
 def _verdict(tests: pd.DataFrame, a: str, b: str, metric: str) -> int:
-    """+1 = b clearly better than a, -1 = clearly worse, 0 = no clear difference (95% CI and Holm-corrected Wilcoxon)."""
+    """+1 = b clearly better than a, -1 = clearly worse, 0 = no clear difference
+    (95% CI of the paired difference excludes 0 and Holm-corrected Wilcoxon p < 0.05)."""
     row = tests[(tests["a"] == a) & (tests["b"] == b) & (tests["metric"] == metric)].iloc[0]
     return 1 if row["verdict"] == f"{b} better" else (-1 if row["verdict"] == f"{a} better" else 0)
 
 
-MARK = {1: " ✓", -1: " ✗", 0: ""}
-
-
 def differences_frame(results: Path):
-    """(values, verdicts): B minus A for each comparison; verdict +1 = clearly better, -1 = clearly worse, 0 = no clear difference."""
+    """(values, verdicts): the second run minus the first for each comparison, and its verdict
+    (+1 = clearly better, -1 = clearly worse, 0 = no clear difference)."""
     tests = _paired(results, SECTIONS)
     values, verdicts = [], []
     for a, b, what in COMPARISONS:
         ra, rb = RUN_NAME[a], RUN_NAME[b]
-        v = {"Change": f"{a} → {b}", "What B changes": what}
-        d = {"Change": 0, "What B changes": 0}
+        v = {"Runs": f"{a} → {b}", "What changes": what}
+        d = {"Runs": 0, "What changes": 0}
         for key, label, scale, fmt in DIFF_METRICS:
             row = tests[(tests["a"] == ra) & (tests["b"] == rb) & (tests["metric"] == key)].iloc[0]
             d[label] = _verdict(tests, ra, rb, key)
-            v[label] = _signed(fmt, scale * row["mean_diff"]) + MARK[d[label]]
+            v[label] = _signed(fmt, scale * row["mean_diff"])
         values.append(v)
         verdicts.append(d)
     return pd.DataFrame(values), pd.DataFrame(verdicts)
 
 
 def _shaded(values: pd.DataFrame, verdicts: pd.DataFrame, formats: Dict[str, str]):
-    colours = verdicts.apply(lambda col: col.map({1: f"background-color: {GOOD}", -1: f"background-color: {BAD}"}).fillna(""))
+    """Clear differences in bold, on green (better) or red (worse)."""
+    css = {1: f"background-color: {GOOD}; font-weight: bold", -1: f"background-color: {BAD}; font-weight: bold"}
+    colours = verdicts.apply(lambda col: col.map(css).fillna(""))
     return _styled(values, formats).apply(lambda _: colours, axis=None)
 
 
 def differences_table(results: Path):
-    """Table 2 of the notebook: shaded = clear difference (95% CI excludes 0 and Holm p < 0.05)."""
+    """Table 2 of the notebook: bold and shaded = clear difference (95% CI excludes 0 and Holm p < 0.05)."""
     return _shaded(*differences_frame(results), {})
 
 
@@ -195,7 +197,7 @@ def learning_rate_table(results_round1: Path, runs_dir: Path = Path("outputs")):
         for key, column, fmt in LR_METRICS:
             mean = 100 * s["corpus"]["wer"]["value"] if key == "wer" else s["metrics"][key]["mean"]
             d[column] = 0 if run == baseline else _verdict(tests, baseline, run, key)
-            v[column] = fmt.format(mean) + MARK[d[column]]
+            v[column] = fmt.format(mean)
         folder = find_run_folder(run, None, runs_dir)
         v["Val. mel loss ↓"] = f"{load_history(folder)[1]['mel'].iloc[-1]:.3f}" if folder else "–"
         d["Val. mel loss ↓"] = 0
@@ -261,8 +263,8 @@ def before_after(results: Path, out: Path) -> Path:
             start = _summary(results, f"pretrained_spk{speaker}")["metrics"][key]["mean"]
             end = _summary(results, run)["metrics"][key]["mean"]
             if abs(end - start) > 0.12 * (xlim[1] - xlim[0]):  # shorter moves leave no room for an arrow
-                ax.annotate("", xy=(end, yy), xytext=(start, yy), zorder=3,
-                            arrowprops=dict(arrowstyle="-|>", color=AFTER, lw=1.3, shrinkA=4.2, shrinkB=3.2, mutation_scale=7))
+                arrow = dict(arrowstyle="-|>", color=AFTER, lw=1.3, shrinkA=4.2, shrinkB=3.2, mutation_scale=7)
+                ax.annotate("", xy=(end, yy), xytext=(start, yy), zorder=3, arrowprops=arrow)
             # the starting dot is larger, so it shows as a halo when a run barely moved
             ax.plot(start, yy, "o", ms=7, color=BEFORE, mec="white", mew=0.8, zorder=4)
             ax.plot(end, yy, "o", ms=4.8, color=AFTER, mec="white", mew=0.8, zorder=5)
@@ -313,10 +315,12 @@ def losses(runs_dir: Path, out: Path, epoch0_csv: Optional[Path] = None) -> Path
             val = pd.concat([first, val], ignore_index=True)
         group = "full" if rid in ("B", "W") else "embedding only"
         for ax, (key, *_) in zip(axes, panels):
-            ax.plot(val["epoch"], val[key], color=SERIES[i], lw=1.6, marker=MARKERS[i], ms=3.2, mec="white", mew=0.5, zorder=3)
+            ax.plot(val["epoch"], val[key], color=SERIES[i], lw=1.6, marker=MARKERS[i], ms=3.2,
+                    mec="white", mew=0.5, zorder=3)
             if train is not None and key in train:
                 ax.plot(train["epoch"], train[key], color=SERIES[i], lw=1, ls=(0, (3, 2)), alpha=0.7, zorder=2)
-        handles.append(Line2D([], [], color=SERIES[i], marker=MARKERS[i], ms=4, mec=SERIES[i], lw=1.6,  # no white gap: reads solid
+        # marker edge in the line colour, so the legend line reads as solid (training is the dashed one)
+        handles.append(Line2D([], [], color=SERIES[i], marker=MARKERS[i], ms=4, mec=SERIES[i], lw=1.6,
                               label=f"{rid}  {labels[rid]}, {group}"))
     for ax, (key, title, subtitle, log) in zip(axes, panels):
         _panel(ax, title, subtitle, "epoch" + (" (0 = pretrained model)" if start else ""))
@@ -325,12 +329,14 @@ def losses(runs_dir: Path, out: Path, epoch0_csv: Optional[Path] = None) -> Path
         if log:
             ax.set_yscale("log")
             low, high = ax.get_ylim()
-            ax.yaxis.set_major_locator(FixedLocator([t for t in (1, 1.5, 2, 3, 5, 7, 10, 15, 20, 30, 50, 100) if low <= t <= high]))
+            ticks = [t for t in (1, 1.5, 2, 3, 5, 7, 10, 15, 20, 30, 50, 100) if low <= t <= high]
+            ax.yaxis.set_major_locator(FixedLocator(ticks))
             ax.yaxis.set_major_formatter(StrMethodFormatter("{x:g}"))
             ax.yaxis.set_minor_locator(NullLocator())
             ax.yaxis.set_minor_formatter(NullFormatter())
         ax.tick_params(axis="y", length=0, labelsize=7.5)
-    handles += [Line2D([], [], color=INK2, lw=1.6, label="validation"), Line2D([], [], color=INK2, lw=1, ls=(0, (3, 2)), label="training")]
+    handles += [Line2D([], [], color=INK2, lw=1.6, label="validation"),
+                Line2D([], [], color=INK2, lw=1, ls=(0, (3, 2)), label="training")]
     fig.legend(handles=handles, loc="lower center", ncol=4, frameon=False, fontsize=7.5, bbox_to_anchor=(0.5, -0.02))
     fig.subplots_adjust(left=0.06, right=0.99, top=0.84, bottom=0.33)
     return _save(fig, out)
