@@ -1,0 +1,80 @@
+{
+  "experiment": "worst_speaker_embedding",
+  "checkpoint": "outputs_v2\\worst_speaker_embedding\\run\\model.worst_speaker_embedding.safetensors",
+  "seed": 1234,
+  "speaker_id": 24,
+  "prompts": [
+    {
+      "file": "worst_speaker_embedding_01.wav",
+      "category": "phonetically balanced",
+      "text": "The birch canoe slid on the smooth planks.",
+      "spoken_text": "The birch canoe slid on the smooth planks."
+    },
+    {
+      "file": "worst_speaker_embedding_02.wav",
+      "category": "in-domain formal",
+      "text": "The committee examined the evidence with great care before reaching its conclusion.",
+      "spoken_text": "The committee examined the evidence with great care before reaching its conclusion."
+    },
+    {
+      "file": "worst_speaker_embedding_03.wav",
+      "category": "numbers and dates",
+      "text": "On March 3rd, 1865, the treasury paid 12,500 dollars to 47 workers.",
+      "spoken_text": "On March third, eighteen sixty-five, the treasury paid twelve thousand, five hundred dollars to forty-seven workers."
+    },
+    {
+      "file": "worst_speaker_embedding_04.wav",
+      "category": "abbreviations",
+      "text": "Dr. Smith and Mr. Jones met at St. Paul's Cathedral at 9 a.m.",
+      "spoken_text": "Dr. Smith and Mr. Jones met at St. Paul's Cathedral at nine a.m."
+    },
+    {
+      "file": "worst_speaker_embedding_05.wav",
+      "category": "rare proper nouns",
+      "text": "Siobhan and Llewellyn drove from Worcestershire to Gloucester.",
+      "spoken_text": "Siobhan and Llewellyn drove from Worcestershire to Gloucester."
+    },
+    {
+      "file": "worst_speaker_embedding_06.wav",
+      "category": "long sentence",
+      "text": "Although the winter had been unusually cold, the villagers still gathered every evening in the old hall, where they shared stories, played music, and planned the spring harvest together.",
+      "spoken_text": "Although the winter had been unusually cold, the villagers still gathered every evening in the old hall, where they shared stories, played music, and planned the spring harvest together."
+    },
+    {
+      "file": "worst_speaker_embedding_07.wav",
+      "category": "question",
+      "text": "Did you really expect the report to be finished before the end of the week?",
+      "spoken_text": "Did you really expect the report to be finished before the end of the week?"
+    },
+    {
+      "file": "worst_speaker_embedding_08.wav",
+      "category": "exclamation",
+      "text": "What a wonderful surprise this turned out to be!",
+      "spoken_text": "What a wonderful surprise this turned out to be!"
+    },
+    {
+      "file": "worst_speaker_embedding_09.wav",
+      "category": "homographs",
+      "text": "I read the book yesterday and will read it again; the lead singer held a lead pipe.",
+      "spoken_text": "I read the book yesterday and will read it again, the lead singer held a lead pipe."
+    },
+    {
+      "file": "worst_speaker_embedding_10.wav",
+      "category": "modern vocabulary",
+      "text": "Please email the PDF to the IT helpdesk and restart the Wi-Fi router.",
+      "spoken_text": "Please email the PDF to the IT helpdesk and restart the Wi-Fi router."
+    },
+    {
+      "file": "worst_speaker_embedding_11.wav",
+      "category": "very short",
+      "text": "Yes.",
+      "spoken_text": "Yes."
+    },
+    {
+      "file": "worst_speaker_embedding_12.wav",
+      "category": "punctuation and pauses",
+      "text": "Wait, stop! Listen carefully; then, slowly, walk away.",
+      "spoken_text": "Wait, stop! Listen carefully, then, slowly, walk away."
+    }
+  ]
+}

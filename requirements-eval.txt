@@ -1,0 +1,14 @@
+# Extra packages for evaluation (on top of requirements.txt). Tested together with
+# torch 2.14.1, numpy 2.5, pandas 3.0 on Python 3.13.
+#   pip install -r requirements.txt -r requirements-eval.txt
+librosa==1.0.0          # mel spectrogram + DTW for MCD
+soundfile==0.14.0       # wav read/write
+scipy==1.18.1           # resampling, DCT, Wilcoxon test
+jiwer==4.0.0            # WER / CER
+openai-whisper==20250625  # ASR for intelligibility (downloads model weights on first use)
+speechbrain==1.1.2      # ECAPA-TDNN speaker embeddings (downloads from Hugging Face on first use)
+pytest==9.2.0           # tests/
+Unidecode==1.4.0        # only for --frontend vits (the official VITS text cleaners import it)
+transformers==5.22.1    # Hugging Face-format VITS (finetune-hf-vits checkpoints, --model)
+safetensors==0.8.0      # reads checkpoint-<step> weight files
+# UTMOS is loaded with torch.hub from github.com/tarepan/SpeechMOS (needs torchaudio, already in requirements.txt)

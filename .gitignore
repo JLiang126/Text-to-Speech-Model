@@ -218,3 +218,21 @@ __marimo__/
 .streamlit/secrets.toml
 
 dataset/*
+# --- evaluation / training artefacts (added on the evaluation branch) ---
+.DS_Store
+*.pth
+checkpoints/
+pretrained_models/
+results/*/wavs/
+*.safetensors
+results/**/wavs/
+results/**/prompts/
+results/**/embeddings.npz
+# training run folders: keep the logs, not the audio or per-epoch checkpoints
+outputs*/**/listening_samples/
+outputs*/**/intermediate_checkpoints/
+# each run's copy of the split (identical to dataset/splits, about 4.5 MB per run)
+outputs*/**/splits/
+# editor lock files (LibreOffice / MS Office)
+.~lock.*#
+~$*

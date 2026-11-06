@@ -1,0 +1,25 @@
+{
+  "n_texts": 12,
+  "n_repeats": 5,
+  "latency_mean_s": 2.1131562966736963,
+  "latency_std_s": 1.0696626926418307,
+  "latency_median_s": 1.9739747000858188,
+  "latency_p90_s": 3.687427270016633,
+  "rtf_mean": 0.4988869527357758,
+  "rtf_std": 0.052660855046418764,
+  "rtf_median": 0.4770226040768897,
+  "rtf_aggregate": 0.4909294540380037,
+  "frontend_share": 0.0008263894089756365,
+  "device": {
+    "device": "cpu",
+    "cpu": "Intel64 Family 6 Model 126 Stepping 5, GenuineIntel",
+    "torch_threads": 4,
+    "torch": "2.14.1+cpu",
+    "python": "3.13.16",
+    "os": "Windows-11-10.0.26300-SP0"
+  },
+  "texts": "prompts",
+  "n_warmup": 3,
+  "experiment": "no_droplayer",
+  "step": null
+}
