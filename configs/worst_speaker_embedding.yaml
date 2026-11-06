@@ -1,10 +1,10 @@
-experiment_description: Training with a male speaker; speaker_id set to 2. Hypothesis - a male speaker may have different acoustic characteristics that the model needs to learn.
+experiment_description: Training with speaker embedding set to most dissimilar speaker; speaker_id set to 24. Hypothesis - a dissimilar speaker may have different acoustic characteristics that the model needs to learn.
 
 # Dataset and text preprocessing
 data_root: ./dataset/
 output_split_dir: null # Uses output_dir/splits if not specified.
 seed: 42
-split_ratios: [0.9, 0.05, 0.05]
+split_ratios: [0.8, 0.1, 0.1]
 subset_size: null
 lowercase: false
 add_blank: true
@@ -38,7 +38,7 @@ persistent_workers: true # Keep worker processes alive between epochs; ignored w
 gradient_accumulation_steps: 1
 gradient_checkpointing: false
 per_device_train_batch_size: 32
-learning_rate: 0.00002
+learning_rate: 0.00004
 adam_beta1: 0.8
 adam_beta2: 0.99
 warmup_ratio: 0.02 # Fraction of total steps to use for linear warmup. Set to 0 to disable warmup.
@@ -50,9 +50,8 @@ speaker_embedding_lr_ratio: 1.0
 
 # Evaluation
 do_eval: true
-eval_steps: 50
 per_device_eval_batch_size: 32
-max_eval_samples: 1000
+max_eval_samples: null
 
 # Loss weights
 weight_disc: 3

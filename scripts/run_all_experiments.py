@@ -40,9 +40,18 @@ def run_experiment(name, gpu_id=None, test_mode='no'):
     )
 
 
-def simple_run(configs, test_mode='no'):
+def simple_run(configs, test_mode='no', gpu_id=None):
     for name in configs:
-        run_experiment(name, test_mode=test_mode)
+        run_experiment(name, gpu_id=gpu_id, test_mode=test_mode)
+
+
+def parallel_run_by_gpu(gpu_0_configs, gpu_1_configs, test_mode='no'):
+    """Run each GPU's experiment list in order, concurrently across GPUs."""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        gpu_0 = pool.submit(simple_run, gpu_0_configs, test_mode, 0)
+        gpu_1 = pool.submit(simple_run, gpu_1_configs, test_mode, 1)
+        gpu_0.result()
+        gpu_1.result()
 
 
 def parallel_run(configs, gpu_ids=GPU_IDS, test_mode='no'):
@@ -77,10 +86,30 @@ if __name__ == "__main__":
     if not CONFIGS:
         raise FileNotFoundError(f"No YAML experiment configs found in {CONFIG_DIR}")
 
+    fifty = [
+        "best_speaker_embedding.yaml",
+        "freeze_text_encoder.yaml",
+        "unfreeze_speech_embeddings_only.yaml",
+        "original_vits_config.yaml",
+        "worst_speaker_embedding.yaml",
+        "freeze_text_encoder_10xLR.yaml",
+        
+    ]
+
+    forty = [
+        "worst_speaker_embedding_10xLR.yaml",
+        "best_speaker_embedding_10xLR.yaml",
+    ]
+
+    fifty_v2 = [
+        "unfreeze_speech_embeddings_only_WSE_10xLR.yaml",
+        "unfreeze_speech_embeddings_only_WSE.yaml",
+    ]
+
+    forty_v2 = [
+        "unfreeze_speech_embeddings_only_10xLR.yaml",
+    ]
+
     test_mode = 'no'  # Set to 'yes' to enable test mode, 'no' to disable it
 
-    do_simple_run = False  # Set to False to use parallel run instead
-    if do_simple_run:
-        simple_run(CONFIGS, test_mode=test_mode)
-    else:
-        parallel_run(CONFIGS, test_mode=test_mode)
+    parallel_run_by_gpu(fifty_v2, forty_v2, test_mode=test_mode)

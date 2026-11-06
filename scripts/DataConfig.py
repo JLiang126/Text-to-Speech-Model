@@ -7,7 +7,7 @@ from typing import Dict, Optional, Tuple
 import yaml
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "train.yaml"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "best_speaker_embedding.yaml"
 
 
 def load_config(config_path: Path) -> Dict:

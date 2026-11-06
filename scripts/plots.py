@@ -1,3 +1,10 @@
+"""
+Functions for plotting spectrograms, alignments, and loss history.
+
+Also manages the saving of loss history as CSV files.
+
+"""
+
 import logging
 import math
 from pathlib import Path
@@ -7,16 +14,20 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-MATPLOTLIB_FLAG = False
+# Constants and configuration for plotting and loss history management
+MATPLOTLIB_FLAG = False 
 LOSS_NAMES = ("mel", "kl", "duration", "fmaps", "gen", "disc", "generator_total")
-HISTORY_COLUMNS = ("epoch", *LOSS_NAMES)
-TRAINING_HISTORY_CSV = "training_loss_history.csv"
-VALIDATION_HISTORY_CSV = "validation_loss_history.csv"
+HISTORY_COLUMNS = ("epoch", *LOSS_NAMES)  # Expected columns for the loss history DataFrame
+TRAINING_HISTORY_CSV = "training_loss_history.csv" # File name for saving training loss history
+VALIDATION_HISTORY_CSV = "validation_loss_history.csv" # File name for saving validation loss history
 
 
 def plot_spectrogram_to_numpy(spectrogram):
     """
     Plots the spectrogram as a heatmap and returns it as a numpy array.
+
+    Note: this is from ylacombe/finetune-hf-vits/utils/plot.py.
+    Can potentially be removed if not needed.
     """
     global MATPLOTLIB_FLAG
     if not MATPLOTLIB_FLAG:
@@ -46,6 +57,9 @@ def plot_spectrogram_to_numpy(spectrogram):
 def plot_alignment_to_numpy(alignment, info=None):
     """
     Plots the alignment matrix as a heatmap and returns it as a numpy array.
+
+    Note: this is from ylacombe/finetune-hf-vits/utils/plot.py
+    Can potentially be removed if not needed.
     """
     global MATPLOTLIB_FLAG
     if not MATPLOTLIB_FLAG:
@@ -76,11 +90,24 @@ def plot_alignment_to_numpy(alignment, info=None):
 
 
 
-def _normalize_history_frame(history):
+def normalize_history_frame(history):
+    """
+    Normalize the loss history DataFrame to ensure it contains the expected columns.
+
+    Args:
+        history (pd.DataFrame): The loss history DataFrame.
+
+    Returns:
+        pd.DataFrame: The normalized loss history DataFrame with the expected columns.
+    Raises:
+        ValueError: If the input is not a pandas DataFrame or is missing the 'epoch' column.
+    """
+    # check that it's a pandas DataFrame
     if not isinstance(history, pd.DataFrame):
         raise ValueError("Loss history must be a pandas DataFrame.")
     frame = history.copy()
 
+    # if the DataFrame is empty, return an empty DataFrame with the expected columns
     if frame.empty:
         return pd.DataFrame(columns=HISTORY_COLUMNS)
     if "epoch" not in frame.columns:
@@ -90,41 +117,67 @@ def _normalize_history_frame(history):
 
 
 def save_loss_history_csvs(training_history, validation_history, directory):
-    """Save separate training and validation loss DataFrames as CSV files."""
+    """
+    Save separate training and validation loss DataFrames as CSV files.
+
+    Args:
+        training_history (pd.DataFrame): The training loss history.
+        validation_history (pd.DataFrame): The validation loss history.
+        directory (str or Path): The directory to save the CSV files.
+    """
+    # Ensure the directory exists before saving CSV files
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    _normalize_history_frame(training_history).to_csv(directory / TRAINING_HISTORY_CSV, index=False)
-    _normalize_history_frame(validation_history).to_csv(directory / VALIDATION_HISTORY_CSV, index=False)
+    # save training and validation loss history as CSV files
+    normalize_history_frame(training_history).to_csv(directory / TRAINING_HISTORY_CSV, index=False)
+    normalize_history_frame(validation_history).to_csv(directory / VALIDATION_HISTORY_CSV, index=False)
 
 
 def plot_training_history(training_history, validation_history, output_path):
-    """Plot loss columns from separate training and validation DataFrames."""
-    training = _normalize_history_frame(training_history)
-    validation = _normalize_history_frame(validation_history)
+    """
+    Plot loss columns from separate training and validation DataFrames.
+
+    Args:
+        training_history (pd.DataFrame): The training loss history.
+        validation_history (pd.DataFrame): The validation loss history.
+        output_path (str or Path): The path to save the plot image.
+    Raises:
+        ValueError: If the training history is empty or contains no loss values.
+    """
+
+    # ensure the training and validation history frames are normalized and contain expected columns
+    training = normalize_history_frame(training_history)
+    validation = normalize_history_frame(validation_history)
     if training.empty:
         raise ValueError("Cannot plot an empty training history.")
 
-    metrics = [
-        name for name in LOSS_NAMES
-        if name in training.columns and training[name].notna().any()
-    ]
+    # get the metrics that are present in the training history and have non-NaN values
+    metrics = [name for name in LOSS_NAMES if name in training.columns and training[name].notna().any()]
     if not metrics:
         raise ValueError("Training history does not contain any loss values.")
 
+    # ensure the output directory exists before saving the plot
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # get the number of rows needed for the subplot grid based on the number of metrics
     row_count = math.ceil(len(metrics) / 2)
+    # create the subplot grid with the calculated number of rows and 2 columns
     fig, axes = plt.subplots(row_count, 2, figsize=(12, 4 * row_count), squeeze=False)
+    # loop through each metric and plot it on the corresponding axis
     for axis, metric in zip(axes.flat, metrics):
+        # plot training loss for the current metric
         axis.plot(training["epoch"], training[metric], label="Training")
+        # plot validation loss for the current metric if available
         if not validation.empty and validation[metric].notna().any():
             axis.plot(validation["epoch"], validation[metric], label="Validation")
+        # add title, labels, grid, and legend for the current subplot
         axis.set(title=metric, xlabel="Epoch", ylabel="Loss")
         axis.grid(True, alpha=0.3)
         axis.legend()
+    # hide any unused subplots
     for axis in list(axes.flat)[len(metrics):]:
         axis.set_visible(False)
-    fig.tight_layout()
+    fig.tight_layout() # tidy up the layout
     try:
         fig.savefig(output_path, dpi=150)
     finally:

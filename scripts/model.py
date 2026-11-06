@@ -14,9 +14,12 @@
 # limitations under the License.
 """PyTorch VITS model.
 
-The executable implementation matches modeling_vits_training.py from
-ylacombe/finetune-hf-vits. Local additions are explanatory comments and
-docstrings only.
+This script has been adapted from ylacombe/finetune-hf-vits/utils/modeling_vits_training.py.
+
+It is essentially the code for the model architecture and forward pass. 
+
+The code itself is unchanged, although comments have been added throughout for clarity and 
+better understanding of the model's components and operations.
 """
 
 import math
@@ -219,6 +222,35 @@ def rand_slice_segments(hidden_states, sample_lengths=None, segment_size=4):
     """
     This method randomly slices segments of the same size from the input tensor.
 
+    Slicing has 3 benefits:
+    1. Reduces memory usage by only processing smaller segments at a time.
+    2. Introduces randomness in the segments, which can help with model generalization.
+    3. Results in segments of consistent size, which can simplify downstream processing.
+
+    Note that alignment, duration prediction, and masked KL loss still use the full
+    sequences for their computations.
+    However, Mel, adversarial and feature-matching losses assess the sampled excerpts only.
+
+    Sliced: only the decoder (waveform generator) and the losses computed on its output: 
+    -mel reconstruction, 
+    -the discriminator, 
+    -adversarial and 
+    -feature-matching losses.
+    Not sliced: 
+    -the text encoder, 
+    -posterior encoder, 
+    -flow, 
+    -KL loss and 
+    -duration predictor all run on the full utterance. Sentence-level prosody and alignment are learned there.
+
+    latent frames = waveform samples // hop_length
+    I.e.
+    8192 / 256 = 32 latent frames
+    22050 Hz gives about 0.37 seconds per segment
+    It can't penalise problems that only show up over longer stretches, such as unnatural intonation
+    across a sentence, so those depend on the prior and duration predictor alone.
+    However, this is the default VITS behavior.
+
     Args:
         hidden_states (`torch.Tensor` of shape `(batch_size, channels, seq_len)`):
             The input tensor to be sliced alongside the `seq_len` dimension.
@@ -305,8 +337,10 @@ def _unconstrained_rational_quadratic_spline(
     min_derivative=1e-3,
 ):
     """
-    This transformation represents a monotonically increasing piecewise rational quadratic function. The predicted
-    widths, heights, and derivatives let the stochastic duration predictor learn a flexible, invertible mapping for
+    This transformation represents a monotonically increasing piecewise rational quadratic function. 
+    It's a wrapper around the core rational quadratic spline transformation, handling boundary conditions and tail behavior.
+    
+    The predicted widths, heights, and derivatives let the stochastic duration predictor learn a flexible, invertible mapping for
     its duration-related latent variables. In the forward direction, its log-determinant provides the change-of-
     variables correction needed to compute likelihoods; in reverse, the same mapping transforms sampled noise back
     into duration predictions. Outside of the `tail_bound`, the transform behaves as an identity function.
@@ -342,20 +376,28 @@ def _unconstrained_rational_quadratic_spline(
             Logarithm of the absolute value of the determinants corresponding to the `outputs` with the `tail_bound`
             limits applied.
     """
-    inside_interval_mask = (inputs >= -tail_bound) & (inputs <= tail_bound)
-    outside_interval_mask = ~inside_interval_mask
 
+    # get masks for inputs inside and outside the tail bound interval
+    inside_interval_mask = (inputs >= -tail_bound) & (inputs <= tail_bound)
+    outside_interval_mask = ~inside_interval_mask # mask for inputs outside the tail bound interval
+
+    # initialize outputs and log determinants with zeros
     outputs = torch.zeros_like(inputs)
     log_abs_det = torch.zeros_like(inputs)
     constant = np.log(np.exp(1 - min_derivative) - 1)
 
+    # pad the unnormalized derivatives to include boundary conditions
     unnormalized_derivatives = nn.functional.pad(unnormalized_derivatives, pad=(1, 1))
+    # set the boundary derivatives to the constant value
     unnormalized_derivatives[..., 0] = constant
     unnormalized_derivatives[..., -1] = constant
 
+    # apply the rational quadratic spline transformation to inputs within the tail bound interval
     outputs[outside_interval_mask] = inputs[outside_interval_mask]
+    # set the outputs for inputs outside the tail bound interval to be equal to the inputs themselves
     log_abs_det[outside_interval_mask] = 0.0
 
+    # apply the rational quadratic spline transformation to inputs inside the tail bound interval
     outputs[inside_interval_mask], log_abs_det[inside_interval_mask] = _rational_quadratic_spline(
         inputs=inputs[inside_interval_mask],
         unnormalized_widths=unnormalized_widths[inside_interval_mask, :],
@@ -382,8 +424,7 @@ def _rational_quadratic_spline(
     min_derivative,
 ):
     """
-    This transformation represents a monotonically increasing piecewise rational quadratic function. Unlike the
-    function `_unconstrained_rational_quadratic_spline`, the function behaves the same across the `tail_bound`.
+    This transformation represents a monotonically increasing piecewise rational quadratic function.
 
     Args:
         inputs (`torch.FloatTensor` of shape `(batch_size, channels, seq_len)`:
@@ -414,18 +455,22 @@ def _rational_quadratic_spline(
         log_abs_det (`torch.FloatTensor` of shape `(batch_size, channels, seq_len)`:
             Logarithm of the absolute value of the determinants corresponding to the `outputs`.
     """
+    # Ensure inputs are within the tail bound interval
     upper_bound = tail_bound
     lower_bound = -tail_bound
     if torch.min(inputs) < lower_bound or torch.max(inputs) > upper_bound:
         raise ValueError("Input to a transform is not within its domain")
 
+    # Determine the number of bins for the piecewise rational quadratic function
     num_bins = unnormalized_widths.shape[-1]
 
+    # Check if the minimum bin width and height are feasible given the number of bins
     if min_bin_width * num_bins > 1.0:
         raise ValueError(f"Minimal bin width {min_bin_width} too large for the number of bins {num_bins}")
     if min_bin_height * num_bins > 1.0:
         raise ValueError(f"Minimal bin height {min_bin_height} too large for the number of bins {num_bins}")
 
+    # Normalize the widths to ensure they sum to 1 and satisfy the minimum bin width constraint
     widths = nn.functional.softmax(unnormalized_widths, dim=-1)
     widths = min_bin_width + (1 - min_bin_width * num_bins) * widths
     cumwidths = torch.cumsum(widths, dim=-1)
@@ -437,6 +482,7 @@ def _rational_quadratic_spline(
 
     derivatives = min_derivative + nn.functional.softplus(unnormalized_derivatives)
 
+    # Normalize the heights to ensure they sum to 1 and satisfy the minimum bin height constraint
     heights = nn.functional.softmax(unnormalized_heights, dim=-1)
     heights = min_bin_height + (1 - min_bin_height * num_bins) * heights
     cumheights = torch.cumsum(heights, dim=-1)
@@ -446,32 +492,46 @@ def _rational_quadratic_spline(
     cumheights[..., -1] = upper_bound
     heights = cumheights[..., 1:] - cumheights[..., :-1]
 
+    # Select the appropriate bin locations based on the direction of the transformation
     bin_locations = cumheights if reverse else cumwidths
     bin_locations[..., -1] += 1e-6
     bin_idx = torch.sum(inputs[..., None] >= bin_locations, dim=-1) - 1
     bin_idx = bin_idx[..., None]
 
+    # Gather the relevant bin parameters for each input based on the selected bin index
+    # This includes cumulative widths, bin widths, cumulative heights, height-to-width ratios, and derivatives
     input_cumwidths = cumwidths.gather(-1, bin_idx)[..., 0]
     input_bin_widths = widths.gather(-1, bin_idx)[..., 0]
 
+    # Compute the height-to-width ratio for each bin
     input_cumheights = cumheights.gather(-1, bin_idx)[..., 0]
     delta = heights / widths
     input_delta = delta.gather(-1, bin_idx)[..., 0]
 
+    # Gather the derivatives for the selected bin
     input_derivatives = derivatives.gather(-1, bin_idx)[..., 0]
     input_derivatives_plus_one = derivatives[..., 1:].gather(-1, bin_idx)[..., 0]
 
+    # Gather the heights for the selected bin
     input_heights = heights.gather(-1, bin_idx)[..., 0]
 
+    # Compute the intermediate term used in both forward and inverse transformations
+    # The intermediate term represents the difference between the sum of derivatives at the bin edges 
+    # and twice the height-to-width ratio
     intermediate1 = input_derivatives + input_derivatives_plus_one - 2 * input_delta
+
+    # in the forward transformation, this intermediate term is used to compute the output and its derivative
     if not reverse:
+        # Compute the normalized position within the bin
         theta = (inputs - input_cumwidths) / input_bin_widths
         theta_one_minus_theta = theta * (1 - theta)
 
+        # Compute the numerator and denominator for the rational quadratic spline formula
         numerator = input_heights * (input_delta * theta.pow(2) + input_derivatives * theta_one_minus_theta)
         denominator = input_delta + intermediate1 * theta_one_minus_theta
         outputs = input_cumheights + numerator / denominator
 
+        # Compute the derivative numerator and log absolute determinant for the forward transformation
         derivative_numerator = input_delta.pow(2) * (
             input_derivatives_plus_one * theta.pow(2)
             + 2 * input_delta * theta_one_minus_theta
@@ -480,20 +540,23 @@ def _rational_quadratic_spline(
         log_abs_det = torch.log(derivative_numerator) - 2 * torch.log(denominator)
         return outputs, log_abs_det
     else:
-        # find the roots of a quadratic equation
+        # find the roots of a quadratic equation for the inverse transformation
         intermediate2 = inputs - input_cumheights
         intermediate3 = intermediate2 * intermediate1
         a = input_heights * (input_delta - input_derivatives) + intermediate3
         b = input_heights * input_derivatives - intermediate3
         c = -input_delta * intermediate2
 
+        # Compute the discriminant of the quadratic equation to ensure real roots exist
         discriminant = b.pow(2) - 4 * a * c
         if not (discriminant >= 0).all():
             raise RuntimeError(f"invalid discriminant {discriminant}")
 
+        # Compute the root of the quadratic equation for the inverse transformation
         root = (2 * c) / (-b - torch.sqrt(discriminant))
         outputs = root * input_bin_widths + input_cumwidths
 
+        # Compute the derivative numerator and log absolute determinant for the inverse transformation
         theta_one_minus_theta = root * (1 - root)
         denominator = input_delta + intermediate1 * theta_one_minus_theta
         derivative_numerator = input_delta.pow(2) * (
@@ -501,6 +564,7 @@ def _rational_quadratic_spline(
             + 2 * input_delta * theta_one_minus_theta
             + input_derivatives * (1 - root).pow(2)
         )
+        # Ensure the derivative numerator is positive to avoid invalid log computation
         log_abs_det = torch.log(derivative_numerator) - 2 * torch.log(denominator)
         return outputs, -log_abs_det
 
@@ -611,7 +675,7 @@ class VitsWaveNet(torch.nn.Module):
             if i < self.num_layers - 1:
                 # For all but the last layer, split the activations into residual and skip parts.
                 res_acts = res_skip_acts[:, : self.hidden_size, :]
-                inputs = (inputs + res_acts) * padding_mask
+                inputs = (inputs + res_acts) * padding_mask # residual connection with padding mask applied
                 outputs = outputs + res_skip_acts[:, self.hidden_size :, :] # Add the skip activations to the output for this layer.
             else:
                 outputs = outputs + res_skip_acts # Add the skip activations from the last layer to the output.
@@ -651,13 +715,21 @@ class VitsWaveNet(torch.nn.Module):
 
 
 class VitsPosteriorEncoder(nn.Module):
-    """Infer a Gaussian latent representation from an observed spectrogram during training.
+    """
+    Infer a Gaussian latent representation from an observed spectrogram during training.
 
     The posterior supplies audio-conditioned latents for training the flow and
     reconstruction objectives; inference instead predicts from text alone.
 
     It uses a wavenet block sandwiched between initial and final convolutions to process the 
     spectrogram and produce the posterior distribution parameters.
+
+    It receives a linear-frequency magnitude spectrogram.
+
+    Default hidden size of 192 latent channels. As such, each frame gets 192 means, 
+    192 standard deviations, and a sampled 192-dimensional latent vector.
+    Note that predicted parameters still depend on neighbouring frames due to the temporal 
+    receptive field of the WaveNet encoder.
 
     """
 
@@ -670,8 +742,11 @@ class VitsPosteriorEncoder(nn.Module):
         super().__init__()
         self.out_channels = config.flow_size
 
+        # spectrogram projection before the WaveNet encoder
         self.conv_pre = nn.Conv1d(config.spectrogram_bins, config.hidden_size, 1)
+        # WaveNet encoder for capturing temporal dependencies in the spectrogram
         self.wavenet = VitsWaveNet(config, num_layers=config.posterior_encoder_num_wavenet_layers)
+        # final projection to produce mean and log standard deviation for the posterior distribution
         self.conv_proj = nn.Conv1d(config.hidden_size, self.out_channels * 2, 1)
 
     def forward(self, inputs, padding_mask, global_conditioning=None):
@@ -757,20 +832,20 @@ class VitsHifiGanDiscriminatorScaleResidualBlock(nn.Module):
         # the first convolution layer processes the input waveform with a fixed kernel size and stride
         self.convs = nn.ModuleList([nn.Conv1d(in_channels, out_channels, 15, 1, padding=7)])
 
-        # the groups are progressively increased to capture wider context in the waveform
+        # stacking the convolutions allows the network to capture wider context in the waveform
         groups = 4
         for in_channels, out_channels in zip(discriminator_scale_channels[1:-1], discriminator_scale_channels[2:]):
-            # subsequent layers use larger kernels and strides with increasing groups to capture wider context
-            self.convs.append(nn.Conv1d(in_channels, out_channels, 41, 4, groups=groups, padding=20))
+            self.convs.append(nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=41, stride=4, groups=groups, padding=20))
+            # increase the group size by a factor of 4 since the channel widths increase by a factor of 4
             groups = groups * 4
 
         channel_size = discriminator_scale_channels[-1]
         # next layer continues to process the waveform with the current group size and kernel configuration
-        self.convs.append(nn.Conv1d(channel_size, channel_size, 41, 4, groups=groups, padding=20))
+        self.convs.append(nn.Conv1d(in_channels=channel_size, out_channels=channel_size, kernel_size=41, stride=4, groups=groups, padding=20))
         # the next layer uses a smaller kernel and stride to refine the waveform features before the final convolution
-        self.convs.append(nn.Conv1d(channel_size, channel_size, 5, 1, padding=2))
+        self.convs.append(nn.Conv1d(in_channels=channel_size, out_channels=channel_size, kernel_size=5, stride=1, padding=2))
         # the final convolution reduces the channel dimension to 1 for the discriminator score
-        self.final_conv = nn.Conv1d(channel_size, 1, 3, 1, padding=1)
+        self.final_conv = nn.Conv1d(in_channels=channel_size, out_channels=1, kernel_size=3, stride=1, padding=1)
 
     def apply_weight_norm(self):
         """Apply weight normalization to the scale discriminator's convolutions.
@@ -791,10 +866,17 @@ class VitsHifiGanDiscriminatorScaleResidualBlock(nn.Module):
         nn.utils.remove_weight_norm(self.final_conv)
 
     def forward(self, hidden_states):
-        """Return waveform scores and intermediate feature maps for adversarial losses.
+        """
+        Return waveform scores and intermediate feature maps for adversarial losses.
 
         The scalar-like scores train real/fake discrimination; saved feature maps
         let the generator match internal real-audio representations as well.
+
+        Args:
+            hidden_states (torch.Tensor): The input audio waveform with shape (batch_size, num_channels, sequence_length).
+
+        Returns:
+            Tuple[torch.Tensor, List[torch.Tensor]]: A tuple containing the discriminator score and the list of intermediate feature maps.
         """
         fmap = []
 
@@ -817,6 +899,8 @@ class VitsHifiGanDiscriminatorScaleResidualBlock(nn.Module):
 class VitsHifiGanDiscriminatorPeriodResidualBlock(nn.Module):
     """
     Discriminate periodic waveform patterns after reshaping audio into 2D periods.
+    A single instance of this block handles one specific period, making it easier to 
+    detect repeating structures corresponding to that period.
 
     Separate period branches make harmonic and repeating structures visible to the
     adversarial loss, which a single-scale waveform view can miss.
@@ -1030,6 +1114,8 @@ class VitsHifiGan(nn.Module):
 
     VITS predicts latent spectrogram frames; this module is the required vocoder stage
     that turns those frames into the time-domain waveform used for listening and GAN loss.
+
+    I.e. this is the actual waveform decoder
     """
 
     def __init__(self, config: VitsConfig):
@@ -1040,10 +1126,16 @@ class VitsHifiGan(nn.Module):
         """
         super().__init__()
         self.config = config
+        # the number of different residual kernel sizes used in the residual blocks
         self.num_kernels = len(config.resblock_kernel_sizes)
+        # the number of upsampling layers to be used in the decoder
         self.num_upsamples = len(config.upsample_rates)
+
+        # the initial convolution layer projects the latent features to the upsampling channel dimension
         self.conv_pre = nn.Conv1d( config.flow_size, config.upsample_initial_channel,  kernel_size=7, stride=1,  padding=3)
 
+        # build the upsampling layers
+        # each upsampling layer increases the temporal resolution of the audio signal
         self.upsampler = nn.ModuleList()
         for i, (upsample_rate, kernel_size) in enumerate(zip(config.upsample_rates, config.upsample_kernel_sizes)):
             self.upsampler.append(
@@ -1056,14 +1148,21 @@ class VitsHifiGan(nn.Module):
                 )
             )
 
+        # build the residual blocks
+        # these blocks help reduce artifacts introduced by the upsampling layers
+        # there is one residual block for each upsampling layer and each kernel size/dilation combination
         self.resblocks = nn.ModuleList()
         for i in range(len(self.upsampler)):
             channels = config.upsample_initial_channel // (2 ** (i + 1))
+            # 3 residual blocks are used by default, with kernel sizes of 3, 7 and 11
             for kernel_size, dilation in zip(config.resblock_kernel_sizes, config.resblock_dilation_sizes):
                 self.resblocks.append(HifiGanResidualBlock(channels, kernel_size, dilation, config.leaky_relu_slope))
 
+        # the final convolution layer projects the features to a single-channel audio waveform
         self.conv_post = nn.Conv1d(channels, 1, kernel_size=7, stride=1, padding=3, bias=False)
 
+        # if speaker embeddings are used, build the conditioning layer
+        # this layer projects the speaker embedding to match the upsampling channel dimension
         if config.speaker_embedding_size != 0:
             self.cond = nn.Conv1d(config.speaker_embedding_size, config.upsample_initial_channel, 1)
 
@@ -1116,28 +1215,44 @@ class VitsHifiGan(nn.Module):
         Returns:
             `torch.FloatTensor`: Tensor of shape shape `(batch_size, 1, num_frames)` containing the speech waveform.
         """
+
+        # apply the initial convolution to project the spectrogram to the upsampling channel dimension
         hidden_states = self.conv_pre(spectrogram)
 
+        # add the speaker conditioning if provided
+        # this helps the model generate speech that matches the target speaker's characteristics
         if global_conditioning is not None:
             hidden_states = hidden_states + self.cond(global_conditioning)
 
+        # pass the hidden states through the upsampling layers and residual blocks
         for i in range(self.num_upsamples):
+            # apply leaky ReLU before each upsampling layer
             hidden_states = nn.functional.leaky_relu(hidden_states, self.config.leaky_relu_slope)
+
+            # do the upsampling
             hidden_states = self.upsampler[i](hidden_states)
 
+            # pass the upsampled hidden states through the residual blocks
+            # combine the outputs of the residual blocks and normalize by the number of kernels
+            # go through each of the 3 residual blocks, with different kernel sizes (3, 7, 11 by default)
             res_state = self.resblocks[i * self.num_kernels](hidden_states)
             for j in range(1, self.num_kernels):
                 res_state += self.resblocks[i * self.num_kernels + j](hidden_states)
             hidden_states = res_state / self.num_kernels
 
+        # apply the final leaky ReLU before the post-convolution
         hidden_states = nn.functional.leaky_relu(hidden_states)
+
+        # apply the post-convolution to project to the waveform channel
         hidden_states = self.conv_post(hidden_states)
+        # apply the tanh activation to constrain the waveform values between -1 and 1
         waveform = torch.tanh(hidden_states)
         return waveform
 
 
 class VitsResidualCouplingLayer(nn.Module):
-    """Transform half of a latent tensor conditioned on the other half.
+    """
+    Transform half of a latent tensor conditioned on the other half.
 
     Coupling layers let the prior flow reshape a simple latent distribution into the
     learned speech distribution while retaining an inexpensive, exactly invertible map.
@@ -1152,8 +1267,11 @@ class VitsResidualCouplingLayer(nn.Module):
         super().__init__()
         self.half_channels = config.flow_size // 2
 
+        # initial 1x1 convolution to project the input to the hidden size
         self.conv_pre = nn.Conv1d(self.half_channels, config.hidden_size, 1)
+        # the main WaveNet module that processes the hidden states
         self.wavenet = VitsWaveNet(config, num_layers=config.prior_encoder_num_wavenet_layers)
+        # final 1x1 convolution to project back to half of the channels
         self.conv_post = nn.Conv1d(config.hidden_size, self.half_channels, 1)
 
     def forward(self, inputs, padding_mask, global_conditioning=None, reverse=False):
@@ -1162,19 +1280,43 @@ class VitsResidualCouplingLayer(nn.Module):
         The forward direction maps latents through the prior flow; reverse mode
         synthesizes latents from that prior. The mask prevents padded frames from
         changing either result.
+
+        Args:
+            inputs: the input latent tensor of shape (batch, channels, time)
+            padding_mask: a mask indicating valid positions in the input
+            global_conditioning: optional global conditioning vector
+            reverse: whether to apply the inverse transformation
+
+        Returns:
+            outputs: the transformed latent tensor
+            log_determinant: the log determinant of the Jacobian of the transformation
         """
+        # split the input into two halves along the channel dimension
         first_half, second_half = torch.split(inputs, [self.half_channels] * 2, dim=1)
+        # project the input first half to the hidden size using a 1x1 convolution
         hidden_states = self.conv_pre(first_half) * padding_mask
+        # pass the hidden states through the WaveNet module to capture temporal dependencies
         hidden_states = self.wavenet(hidden_states, padding_mask, global_conditioning)
+        # project the hidden states back to half of the channels to obtain the mean
         mean = self.conv_post(hidden_states) * padding_mask
+
+        # initialize the log standard deviation to zeros, same shape as the mean
+        # i.e. the actual standard deviation is 1.0; no scaling is applied here!
         log_stddev = torch.zeros_like(mean)
 
+        # apply the affine transformation to the second half conditioned on the first half
         if not reverse:
+            # in the forward direction, scale and shift the second half using the mean and log_stddev
             second_half = mean + second_half * torch.exp(log_stddev) * padding_mask
+            # concatenate the original first and transformed second halves to form the output
             outputs = torch.cat([first_half, second_half], dim=1)
+            # compute the log determinant of the Jacobian for the affine transformation
+            # note that the log determinant is zero in this function since no scaling is applied
+            # i.e. the jacobian determinant is 1 and its log is 0
             log_determinant = torch.sum(log_stddev, [1, 2])
             return outputs, log_determinant
         else:
+            # in the reverse direction, invert the affine transformation using the mean and log_stddev
             second_half = (second_half - mean) * torch.exp(-log_stddev) * padding_mask
             outputs = torch.cat([first_half, second_half], dim=1)
             return outputs, None
@@ -1199,36 +1341,47 @@ class VitsResidualCouplingLayer(nn.Module):
 
 
 class VitsResidualCouplingBlock(nn.Module):
-    """Stack coupling layers and channel flips to form the prior latent flow.
+    """
+    Stack coupling layers and channel flips to form the prior latent flow.
 
     A single coupling layer only transforms one half conditioned on the other;
     alternating channel order lets every latent channel influence later transforms.
     """
 
     def __init__(self, config: VitsConfig):
-        """Create the configured sequence of residual coupling layers.
+        """
+        Create the configured sequence of residual coupling layers.
 
         The number of stages controls the flow's capacity to match the prior and
         posterior latent distributions.
         """
         super().__init__()
         self.flows = nn.ModuleList()
+        # initialise a sequence of residual coupling layers as specified by the config
         for _ in range(config.prior_encoder_num_flows):
             self.flows.append(VitsResidualCouplingLayer(config))
 
     def forward(self, inputs, padding_mask, global_conditioning=None, reverse=False):
-        """Apply all coupling layers in forward or reverse order.
+        """
+        Apply all coupling layers in forward or reverse order.
 
         Reversing both layer order and channel flips is essential for an exact inverse
         when decoding prior latents back into the posterior latent space.
         """
+
+        # forward pass through the sequence of residual coupling layers
         if not reverse:
             for flow in self.flows:
+                # apply instance of the residual coupling layer
                 inputs, _ = flow(inputs, padding_mask, global_conditioning)
+                # flip the channels to alternate the order for the next layer
                 inputs = torch.flip(inputs, [1])
         else:
+            # reverse pass through the sequence of residual coupling layers
             for flow in reversed(self.flows):
+                # flip the channels to restore the original order before applying the inverse transformation
                 inputs = torch.flip(inputs, [1])
+                # apply the inverse of the residual coupling layer
                 inputs, _ = flow(inputs, padding_mask, global_conditioning, reverse=True)
         return inputs
 
@@ -1264,10 +1417,16 @@ class VitsResidualCouplingBlock(nn.Module):
 
 
 class VitsDilatedDepthSeparableConv(nn.Module):
-    """Extract contextual features with masked dilated depthwise-separable convolutions.
+    """
+    Extract contextual features with masked dilated depthwise-separable convolutions.
 
     These blocks expand the duration predictor's temporal context at lower cost than
     full convolutions, while residual connections preserve information across layers.
+
+    They are separable because the depthwise and pointwise convolutions are applied 
+    independently, reducing computational cost while maintaining expressive power.
+
+
     """
 
     def __init__(self, config: VitsConfig, dropout_rate=0.0):
@@ -1277,18 +1436,26 @@ class VitsDilatedDepthSeparableConv(nn.Module):
         channels so the predictor can learn interactions between those patterns.
         """
         super().__init__()
-        kernel_size = config.duration_predictor_kernel_size
-        channels = config.hidden_size
-        self.num_layers = config.depth_separable_num_layers
+        kernel_size = config.duration_predictor_kernel_size # Kernel size for the dilated convolutions in the duration predictor
+        channels = config.hidden_size # Number of channels for the convolutions in the duration predictor
+        self.num_layers = config.depth_separable_num_layers # Number of dilated depthwise-separable convolution layers
 
+        # initialize dropout, dilated and pointwise convolutions, and normalization layers
         self.dropout = nn.Dropout(dropout_rate)
+        # dilated depthwise convolutions capture local temporal patterns efficiently
         self.convs_dilated = nn.ModuleList()
+        # pointwise convolutions mix channels to capture interactions between local patterns
         self.convs_pointwise = nn.ModuleList()
+        # normalization layers help stabilize training and improve convergence
         self.norms_1 = nn.ModuleList()
         self.norms_2 = nn.ModuleList()
+        # loop over the number of layers to create dilated depthwise and pointwise convolutions with corresponding normalization layers
+        # each loop increases the dilation exponentially to capture longer temporal dependencies
         for i in range(self.num_layers):
             dilation = kernel_size**i
             padding = (kernel_size * dilation - dilation) // 2
+            # create the dilated depthwise convolution with the calculated dilation and padding
+            # it's depth-wise because the number of groups equals the number of channels
             self.convs_dilated.append(
                 nn.Conv1d(
                     in_channels=channels,
@@ -1299,6 +1466,7 @@ class VitsDilatedDepthSeparableConv(nn.Module):
                     padding=padding,
                 )
             )
+            # create the pointwise convolution that mixes channels without changing the temporal dimension
             self.convs_pointwise.append(nn.Conv1d(channels, channels, 1))
             self.norms_1.append(nn.LayerNorm(channels))
             self.norms_2.append(nn.LayerNorm(channels))
@@ -1308,29 +1476,55 @@ class VitsDilatedDepthSeparableConv(nn.Module):
 
         Optional speaker conditioning is added before the stack, and masking prevents
         padding from leaking through convolutions or residual updates.
+
+        Args:
+            inputs (Tensor): Input features of shape (batch, channels, time).
+            padding_mask (Tensor): Mask indicating padded positions, same shape as inputs.
+            global_conditioning (Tensor, optional): Optional speaker embedding to condition the model.
+
+        Returns:
+            Tensor: Output features of the same shape as inputs, with residual connections applied and padded positions zeroed.
         """
+
+        # apply global conditioning if provided, adding it to the input features (speaker embedding)
         if global_conditioning is not None:
             inputs = inputs + global_conditioning
 
         for i in range(self.num_layers):
+            # apply depthwise dilated convolution to capture local temporal patterns with increasing receptive field
             hidden_states = self.convs_dilated[i](inputs * padding_mask)
             hidden_states = self.norms_1[i](hidden_states.transpose(1, -1)).transpose(1, -1)
             hidden_states = nn.functional.gelu(hidden_states)
+            # apply pointwise convolution to mix channels
             hidden_states = self.convs_pointwise[i](hidden_states)
             hidden_states = self.norms_2[i](hidden_states.transpose(1, -1)).transpose(1, -1)
             hidden_states = nn.functional.gelu(hidden_states)
             hidden_states = self.dropout(hidden_states)
+            # residual connection to preserve input information
             inputs = inputs + hidden_states
 
         return inputs * padding_mask
 
 
 class VitsConvFlow(nn.Module):
-    """Apply a conditional spline coupling transform in the duration predictor's flow.
+    """
+    Apply a conditional spline coupling transform in the duration predictor's flow.
 
     The conditional network predicts spline parameters, allowing the stochastic
     duration model to represent non-Gaussian distributions while retaining an exact
     inverse and tractable likelihood.
+
+    Splits its input channels into two halves.
+    Uses one half, along with text-conditioned context, to predict spline parameters: widths, heights, and slopes.
+    Applies the resulting invertible rational-quadratic spline to the other half, then joins the halves again.
+    
+    Spline parameters are different for each token position (each position gets a unique spline). However, because 
+    of the dilated separable convolutional block, the parameters at a given position are influenced by nearby positions. 
+    The spline's horizontal axis is the latent value.
+
+    The jacobian of the transformation is easily computable due to the piecewise rational-quadratic structure, 
+    which allows for exact likelihood evaluation and inversion. I.e the slope of the spline at each segment is 
+    directly available from the derivatives, making the jacobian computation straightforward.
     """
 
     def __init__(self, config: VitsConfig):
@@ -1340,34 +1534,53 @@ class VitsConvFlow(nn.Module):
         the data-dependent rational-quadratic transformation.
         """
         super().__init__()
-        self.filter_channels = config.hidden_size
-        self.half_channels = config.depth_separable_channels // 2
-        self.num_bins = config.duration_predictor_flow_bins
+        self.filter_channels = config.hidden_size # number of channels in the filter convolution
+        self.half_channels = config.depth_separable_channels // 2 # number of channels in each half of the input
+        # number of bins in the spline coupling transform
+        # the bins are used to define the piecewise rational-quadratic spline segments
+        # they are equally spaced within the tail bound of the spline segments
+        self.num_bins = config.duration_predictor_flow_bins 
+        # the tail bound defines the range outside of which the spline is linear
         self.tail_bound = config.duration_predictor_tail_bound
 
-        self.conv_pre = nn.Conv1d(self.half_channels, self.filter_channels, 1)
+        # initial convolution to project the first half of the input to the filter channels
+        self.conv_pre = nn.Conv1d(self.half_channels, self.filter_channels, 1) # 1x1 convolution to project input to filter channels
+        # dilated depth-separable convolution for capturing long-range dependencies
         self.conv_dds = VitsDilatedDepthSeparableConv(config)
+        # final convolution to project the filter channels to the spline parameters
         self.conv_proj = nn.Conv1d(self.filter_channels, self.half_channels * (self.num_bins * 3 - 1), 1)
 
     def forward(self, inputs, padding_mask, global_conditioning=None, reverse=False):
-        """Transform one channel half and return its log-determinant for likelihood computation.
+        """
+        Transform one channel half and return its log-determinant for likelihood computation.
 
         Conditioning comes from text and, when present, the speaker. The Jacobian term
         is needed for correct change-of-variables probabilities during flow training.
         """
+        # split the input into two halves along the channel dimension
         first_half, second_half = torch.split(inputs, [self.half_channels] * 2, dim=1)
 
+        # apply the initial convolution to the first half of the input
         hidden_states = self.conv_pre(first_half)
+        # apply the dilated depth-separable convolution to the hidden states
+        # insert speaker conditioning if available
         hidden_states = self.conv_dds(hidden_states, padding_mask, global_conditioning)
+        # apply the final convolution to project the hidden states to the spline parameters
         hidden_states = self.conv_proj(hidden_states) * padding_mask
 
+        # reshape the hidden states to separate the spline parameters for each channel and position
         batch_size, channels, length = first_half.shape
         hidden_states = hidden_states.reshape(batch_size, channels, -1, length).permute(0, 1, 3, 2)
 
+        # extract the unnormalized widths, heights, and derivatives for the spline
         unnormalized_widths = hidden_states[..., : self.num_bins] / math.sqrt(self.filter_channels)
         unnormalized_heights = hidden_states[..., self.num_bins : 2 * self.num_bins] / math.sqrt(self.filter_channels)
         unnormalized_derivatives = hidden_states[..., 2 * self.num_bins :]
 
+        # apply the rational-quadratic spline to the second half of the input
+        # this is in contrast to typical normalising flows where a simpler affine transformation might be used 
+        # get the transformed second half and the log-determinant from the spline function
+        # the log_abs_det returned by the spline function corresponds to the log of the absolute value of the Jacobian determinant for the transformation
         second_half, log_abs_det = _unconstrained_rational_quadratic_spline(
             second_half,
             unnormalized_widths,
@@ -1377,8 +1590,12 @@ class VitsConvFlow(nn.Module):
             tail_bound=self.tail_bound,
         )
 
+        # concatenate the first and transformed second halves and apply the padding mask
         outputs = torch.cat([first_half, second_half], dim=1) * padding_mask
         if not reverse:
+            # compute the log-determinant of the transformation for the forward pass
+            # the layer's determinant is the the product of individual Jacobian determinants 
+            # for each position and channel. I.e. the log determinant is the sum of the log values
             log_determinant = torch.sum(log_abs_det * padding_mask, [1, 2])
             return outputs, log_determinant
         else:
@@ -1386,35 +1603,59 @@ class VitsConvFlow(nn.Module):
 
 
 class VitsElementwiseAffine(nn.Module):
-    """Apply a learned per-channel affine transform within a normalizing flow.
+    """
+    Apply a learned per-channel affine transform within a normalizing flow.
 
     This simple invertible layer provides trainable translation and scale before or
     between more expressive spline transforms.
+
     """
 
     def __init__(self, config: VitsConfig):
-        """Initialize trainable channel-wise translation and log-scale parameters.
+        """
+        Initialize trainable channel-wise translation and log-scale parameters.
 
         Log-scale parameters make the multiplicative factor positive and yield a
         simple analytic inverse and log-determinant.
         """
         super().__init__()
+        # get the number of channels for the affine transform
         self.channels = config.depth_separable_channels
+        # create learnable parameters for translation and log-scale on a per-channel basis
         self.translate = nn.Parameter(torch.zeros(self.channels, 1))
         self.log_scale = nn.Parameter(torch.zeros(self.channels, 1))
 
     def forward(self, inputs, padding_mask, global_conditioning=None, reverse=False):
-        """Apply the affine transform or its inverse and return the forward log-determinant.
+        """
+        Apply the affine transform or its inverse and return the forward log-determinant.
 
         The determinant contribution is required to evaluate flow likelihoods; reverse
         mode maps sampled latents back without needing that training correction.
+
+        Note that since the transformation is element-wise, the output only depends on
+        the matching input value at each position. This means that non-diagonal elements of 
+        the Jacobian are zero, and the log-determinant is simply the sum of the log-scale parameters 
+        over the valid positions.
+
+        Args:
+            inputs: Input tensor of shape [batch, channels, time].
+            padding_mask: Mask tensor indicating valid positions.
+            global_conditioning: Optional global conditioning tensor (e.g., speaker embedding).
+            reverse: If True, apply the inverse transform.
+
+        Returns:
+            outputs: Transformed tensor.
+            log_determinant: Log-determinant of the transformation (None if reverse).
         """
         if not reverse:
+            # apply the forward affine transform: scale and then translate
             outputs = self.translate + torch.exp(self.log_scale) * inputs
             outputs = outputs * padding_mask
+            # compute the log-determinant of the transformation for likelihood calculation
             log_determinant = torch.sum(self.log_scale * padding_mask, [1, 2])
             return outputs, log_determinant
         else:
+            # apply the inverse affine transform: subtract translation and scale back
             outputs = (inputs - self.translate) * torch.exp(-self.log_scale) * padding_mask
             return outputs, None
 
@@ -1425,6 +1666,15 @@ class VitsStochasticDurationPredictor(nn.Module):
     Training estimates duration likelihood using a learned posterior flow, while
     inference samples the prior flow. This captures duration uncertainty that a
     point-estimate predictor cannot represent.
+
+    It contains two stacks, one for the prior duration predictor conditioned on text, 
+    and one for the posterior duration predictor conditioned on observed durations.
+
+    The posterior stack sees the actual observed durations, and the text. It generates 
+    useful fractional offsets and auxiliary latent values for training.
+
+    During inference, the prior stack is used to generate duration predictions from text. 
+
     """
 
     def __init__(self, config):
@@ -1434,33 +1684,46 @@ class VitsStochasticDurationPredictor(nn.Module):
         the prior stack converts noise into duration predictions conditioned on text.
         """
         super().__init__()
-        embed_dim = config.speaker_embedding_size
-        filter_channels = config.hidden_size
+        embed_dim = config.speaker_embedding_size # dimension of speaker embeddings for conditioning
+        filter_channels = config.hidden_size # number of channels in the convolutional layers for the duration predictor
 
-        self.conv_pre = nn.Conv1d(filter_channels, filter_channels, 1)
-        self.conv_proj = nn.Conv1d(filter_channels, filter_channels, 1)
+        # build the initial convolutional layers for the duration predictor
+        self.conv_pre = nn.Conv1d(filter_channels, filter_channels, 1) # initial 1x1 convolution for the duration predictor
+        self.conv_proj = nn.Conv1d(filter_channels, filter_channels, 1) # projection 1x1 convolution for the duration predictor
+        # build the dilated depth-separable convolution block for the duration predictor
         self.conv_dds = VitsDilatedDepthSeparableConv(
             config,
             dropout_rate=config.duration_predictor_dropout,
         )
 
+        # build the speaker-conditioning projection if speaker embeddings are used
         if embed_dim != 0:
             self.cond = nn.Conv1d(embed_dim, filter_channels, 1)
 
+        # build the flow-based duration predictor stack
         self.flows = nn.ModuleList()
+        # first elementwise affine flow
         self.flows.append(VitsElementwiseAffine(config))
+        # a series of neural spline flows for flexible duration modeling
         for _ in range(config.duration_predictor_num_flows):
             self.flows.append(VitsConvFlow(config))
 
-        self.post_conv_pre = nn.Conv1d(1, filter_channels, 1)
-        self.post_conv_proj = nn.Conv1d(filter_channels, filter_channels, 1)
+        # --- the below code is similar to the above, except for the posterior duration predictor rather 
+        # than the prior duration predictor, as it takes observed durations as input rather than text.
+
+        self.post_conv_pre = nn.Conv1d(1, filter_channels, 1) # initial 1x1 convolution for the posterior duration predictor
+        self.post_conv_proj = nn.Conv1d(filter_channels, filter_channels, 1) # projection 1x1 convolution for the posterior duration predictor
+        # build the dilated depth-separable convolution block for the posterior duration predictor
         self.post_conv_dds = VitsDilatedDepthSeparableConv(
             config,
             dropout_rate=config.duration_predictor_dropout,
         )
 
+        # build the flow-based posterior duration predictor stack
         self.post_flows = nn.ModuleList()
+        # first elementwise affine flow for the posterior duration predictor
         self.post_flows.append(VitsElementwiseAffine(config))
+        # a series of neural spline flows for flexible posterior duration modeling
         for _ in range(config.duration_predictor_num_flows):
             self.post_flows.append(VitsConvFlow(config))
 
@@ -1480,104 +1743,200 @@ class VitsStochasticDurationPredictor(nn.Module):
         Training mode combines prior and posterior flow densities into a likelihood
         objective; reverse mode samples the latent flow and returns per-token
         log-duration values for synthesis.
+
+        Note that training durations are integer frame counts, but the normalising flow
+        models continuous values, so the predictor uses a learned fractional offset using 
+        the sigmoid function to model fractional durations (between 0 and 1). A log-determinant 
+        term is included to account for this transformation in the probability density.
+
+        Note that ground-truth durations are provided by the monotonic alignment search (MAS)
+        algorithm, which aligns the input tokens with the target acoustic frames in a monotonic fashion.
+
+        Args:
+            inputs (Tensor): Input features for the duration predictor. These are typically text-encoded 
+                representations of the input sequence from the text encoder.
+            padding_mask (Tensor): Mask indicating valid positions in the input.
+            global_conditioning (Tensor, optional): Speaker embeddings for conditioning.
+            durations (Tensor, optional): Ground-truth durations for training.
+            reverse (bool, optional): Whether to run the model in reverse (sampling) mode.
+            noise_scale (float, optional): Scale of the noise for sampling.
+        Returns:
+            Tensor: Predicted log durations or sampled durations depending on the mode.
         """
-        inputs = torch.detach(inputs)
-        inputs = self.conv_pre(inputs)
+        inputs = torch.detach(inputs) # Detach inputs from the computation graph to prevent gradients from flowing back to text encoder
+        inputs = self.conv_pre(inputs) # Apply initial convolution to the inputs
 
         if global_conditioning is not None:
-            global_conditioning = torch.detach(global_conditioning)
+            global_conditioning = torch.detach(global_conditioning) # Detach global conditioning to prevent gradients from flowing back
             inputs = inputs + self.cond(global_conditioning)
 
+        # Apply deep dilated separable convolutions to capture long-range dependencies in the inputs
         inputs = self.conv_dds(inputs, padding_mask)
+        # Project the convolved features to the desired output dimension and apply the padding mask
         inputs = self.conv_proj(inputs) * padding_mask
 
-        if not reverse:
-            hidden_states = self.post_conv_pre(durations)
-            hidden_states = self.post_conv_dds(hidden_states, padding_mask)
-            hidden_states = self.post_conv_proj(hidden_states) * padding_mask
+        if not reverse: # Training mode: compute the posterior flow and log-likelihood for the given durations
 
+
+            # TRAINING-ONLY POSTERIOR: self.post_flows.
+            # Transform random noise into two values (A, V) per token position.
+            # Text/speaker features AND observed-duration features condition this transformation.
+            # sigmoid(A) will become the fractional offset u.
+            # V is an auxiliary latent coordinate that will also enter self.flows.
+
+            # Preprocess the ground-truth durations through the posterior convolutional layers to obtain 
+            # hidden states for the posterior flow, 
+            # i.e. get duration-encoded features used for conditioning the posterior flow
+            hidden_states = self.post_conv_pre(durations) # Apply initial posterior convolution to the durations
+            hidden_states = self.post_conv_dds(hidden_states, padding_mask) # Apply deep dilated separable convolutions to the hidden states
+            hidden_states = self.post_conv_proj(hidden_states) * padding_mask # Project the hidden states and apply the padding mask
+            # the hidden states are now ready to be used as conditioning for the posterior flow
+
+            # Sample initial latent variables for the posterior flow from a standard normal distribution
+            # 2 latent values per position in the sequence, for the first and second halves of the latent representation channels
             random_posterior = (
                 torch.randn(durations.size(0), 2, durations.size(2)).to(device=inputs.device, dtype=inputs.dtype)
                 * padding_mask
             )
             latents_posterior = random_posterior
 
+            # Pass the initial latent variables through the first posterior flow and compute the log-determinant
+            # these are conditioned on both the text inputs and the duration-encoded hidden states
             latents_posterior, log_determinant = self.post_flows[0](
                 latents_posterior, padding_mask, global_conditioning=inputs + hidden_states
             )
             log_determinant_posterior_sum = log_determinant
 
+            # Iterate through the remaining posterior flows, updating the latent variables and log-determinant at each step
             for flow in self.post_flows[1:]:
                 latents_posterior, log_determinant = flow(
                     latents_posterior, padding_mask, global_conditioning=inputs + hidden_states
                 )
+                # Flip the latent variables along the channel on alternate steps to improve flow expressiveness
                 latents_posterior = torch.flip(latents_posterior, [1])
+                # Accumulate the log-determinant for the posterior flow, so that the probability
+                # density of the output can be correctly computed.
                 log_determinant_posterior_sum += log_determinant
 
+            # Split the posterior latent variables into two halves for further processing
             first_half, second_half = torch.split(latents_posterior, [1, 1], dim=1)
 
+            # call the first and second halves A and V
+            # A becomes a fractional offset, u = sigmoid(A). V remains as is for further processing.
+            
+            # the sigmoid log-derivative is added to the posterior's accumulated log-determinant to account for the change of variables
+            # from A to u = sigmoid(A).
+            # note that the logsigmoid functions are used for numerical stability when computing the log-derivative of the sigmoid function.
             log_determinant_posterior_sum += torch.sum(
                 (nn.functional.logsigmoid(first_half) + nn.functional.logsigmoid(-first_half)) * padding_mask, [1, 2]
             )
+            # Compute the log-density of the sampled pair (u, V), given the text and observed durations
+            # logq = initial Gaussian log-density − posterior transformation log-determinants
             logq = (
                 torch.sum(-0.5 * (math.log(2 * math.pi) + (random_posterior**2)) * padding_mask, [1, 2])
                 - log_determinant_posterior_sum
             )
 
+            # now, convert the integer duration into a continuous, logged value
+            # continuous duration = durations - u 
             first_half = (durations - torch.sigmoid(first_half)) * padding_mask
+            # calculate the log duration
             first_half = torch.log(torch.clamp_min(first_half, 1e-5)) * padding_mask
+            # keep track of the log-determinant contribution from the log transformation
             log_determinant_sum = torch.sum(-first_half, [1, 2])
-
+        
+            # Build the two-channel input to the main duration model:
+            # [log(duration - u), V].
+            # first_half now holds the logged continuous duration, (not the posterior output A).
             latents = torch.cat([first_half, second_half], dim=1)
+
+
+            # MAIN DURATION MODEL: self.flows, separate from self.post_flows.
+            # Transform [log(duration - u), V] into Gaussian-space values z.
+            # Text/speaker features condition this transformation.
+            # The observed duration enters through the transformed input, not extra conditioning.
+            # At inference, this main flow is run in reverse to generate log durations.
+
+            # Pass the concatenated latent variables through the first flow of the duration predictor
             latents, log_determinant = self.flows[0](latents, padding_mask, global_conditioning=inputs)
 
+            # each flow transforms the [log(duration - u), v] pair and contributes a log-determinant.
             log_determinant_sum += log_determinant
             for flow in self.flows[1:]:
                 latents, log_determinant = flow(latents, padding_mask, global_conditioning=inputs)
+                # flip the latents for the next flow in the stack
                 latents = torch.flip(latents, [1])
+                # accumulate the log-determinant from this flow into the total sum
                 log_determinant_sum += log_determinant
 
+            # Compute the negative log-likelihood of the final latent variables under the standard normal prior, 
+            # adjusted by the corrections from the log-determinant of the initial transformation and the main flows
+            # i.e. nll = (Gaussian negative log-density) - (log determinants from the log transform and main flows)
+            # it measures how well the duration model explains the continuous duration and auxiliary latent variables
             nll = torch.sum(0.5 * (math.log(2 * math.pi) + (latents**2)) * padding_mask, [1, 2]) - log_determinant_sum
+
+            # nll: how the MAIN model scores the continuous duration and V, given text.
+            # logq: how the POSTERIOR scores its sampled offset u and V, given text and duration.
+            # Their sum is a sampled variational duration-loss objective.
+            # This accounts for the posterior's choice of u and V, rather than treating those
+            # training-only sampled values as fixed observed targets.
             return nll + logq
-        else:
+        else:  # Inference mode: generate durations from the prior flow model
+
+            # Reverse the order of the flows for inference and remove the second-to-last flow as it is not needed for generation
             flows = list(reversed(self.flows))
             flows = flows[:-2] + [flows[-1]]  # remove a useless vflow
 
+            # Sample initial latent variables from a standard normal distribution scaled by the noise factor
+            # the 2 indicates the number of latent channels (first_half and second_half)
             latents = (
                 torch.randn(inputs.size(0), 2, inputs.size(2)).to(device=inputs.device, dtype=inputs.dtype)
                 * noise_scale
             )
+            # Iterate through the reversed flows to transform the latent variables into the desired distribution
             for flow in flows:
                 latents = torch.flip(latents, [1])
                 latents, _ = flow(latents, padding_mask, global_conditioning=inputs, reverse=True)
 
+            # Split the final latent variables into log-duration and auxiliary components
             log_duration, _ = torch.split(latents, [1, 1], dim=1)
             return log_duration
 
 
 class VitsDurationPredictor(nn.Module):
-    """Predict log durations deterministically from text-encoder features.
+    """
+    Predict log durations deterministically from text-encoder features.
 
     This simpler alternative is used when stochastic duration prediction is disabled;
     it provides token lengths needed to expand text states into acoustic frames.
+
+    This version is simply two convolutional layers (with layernorm) followed by a projection to predict log durations.
+
+    Note that the inputs are detached because the duration predictor only considers duration loss.
     """
 
     def __init__(self, config):
-        """Create the convolutional duration network and optional speaker conditioning.
+        """
+        Create the convolutional duration network and optional speaker conditioning.
 
         The projections map contextual text features to one duration value per token.
+
+
         """
         super().__init__()
-        kernel_size = config.duration_predictor_kernel_size
-        filter_channels = config.duration_predictor_filter_channels
+        kernel_size = config.duration_predictor_kernel_size # get kernel size for the convolutional layers
+        filter_channels = config.duration_predictor_filter_channels # get number of filter channels for the convolutional layers
 
-        self.dropout = nn.Dropout(config.duration_predictor_dropout)
+        self.dropout = nn.Dropout(config.duration_predictor_dropout) # create dropout layer for regularization
+        # first convolutional layer with filter channels and kernel size
         self.conv_1 = nn.Conv1d(config.hidden_size, filter_channels, kernel_size, padding=kernel_size // 2)
-        self.norm_1 = nn.LayerNorm(filter_channels, eps=config.layer_norm_eps)
+        self.norm_1 = nn.LayerNorm(filter_channels, eps=config.layer_norm_eps) # layer normalization for the first convolutional layer
+        # second convolutional layer with filter channels and kernel size
         self.conv_2 = nn.Conv1d(filter_channels, filter_channels, kernel_size, padding=kernel_size // 2)
-        self.norm_2 = nn.LayerNorm(filter_channels, eps=config.layer_norm_eps)
-        self.proj = nn.Conv1d(filter_channels, 1, 1)
+        self.norm_2 = nn.LayerNorm(filter_channels, eps=config.layer_norm_eps) # layer normalization for the second convolutional layer
+        self.proj = nn.Conv1d(filter_channels, 1, 1) # final projection to a single output channel for log-duration prediction
 
+        # optional speaker conditioning projection if speaker embeddings are used
         if config.speaker_embedding_size != 0:
             self.cond = nn.Conv1d(config.speaker_embedding_size, config.hidden_size, 1)
 
@@ -1597,35 +1956,47 @@ class VitsDurationPredictor(nn.Module):
         The model exponentiates these values to obtain token durations, so padding is
         masked here to prevent nonexistent tokens from extending the generated audio.
         """
-        inputs = torch.detach(inputs)
 
+        # detach inputs from the computation graph to prevent gradients from flowing back
+        inputs = torch.detach(inputs) 
+
+        # incorporate speaker conditioning if available
         if global_conditioning is not None:
-            global_conditioning = torch.detach(global_conditioning)
+            global_conditioning = torch.detach(global_conditioning) # detach global conditioning from the computation graph
             inputs = inputs + self.cond(global_conditioning)
 
+        # first block of convolution, ReLU, layernorm, and dropout
         inputs = self.conv_1(inputs * padding_mask)
         inputs = torch.relu(inputs)
         inputs = self.norm_1(inputs.transpose(1, -1)).transpose(1, -1)
         inputs = self.dropout(inputs)
 
+        # second block of convolution, ReLU, layernorm, and dropout
         inputs = self.conv_2(inputs * padding_mask)
         inputs = torch.relu(inputs)
         inputs = self.norm_2(inputs.transpose(1, -1)).transpose(1, -1)
         inputs = self.dropout(inputs)
 
+        # projection to log-duration predictions
         inputs = self.proj(inputs * padding_mask)
         return inputs * padding_mask
 
 
 class VitsAttention(nn.Module):
-    """Multi-headed self-attention with learned relative positional representations.
+    """
+    Multi-headed self-attention with learned relative positional representations.
 
-    Relative positions help the text encoder model phone order and local dependencies
+    Relative positions help the text encoder model phoneme order and local dependencies
     without requiring a fixed absolute position embedding for each sequence length.
+
+    Although the attention is between ALL tokens in the sequence, the relative position embeddings 
+    focus on a local window of tokens to capture nearby dependencies more effectively.
+    This window size is -4 through to 4 by default.
     """
 
     def __init__(self, config: VitsConfig):
-        """Create attention projections and learned relative-position embeddings.
+        """
+        Create attention projections and learned relative-position embeddings.
 
         Head dimensions and projection sizes come from the checkpoint config so
         pretrained attention weights have the expected shapes.
@@ -1634,6 +2005,7 @@ class VitsAttention(nn.Module):
         self.embed_dim = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.dropout = config.attention_dropout
+        # Store window size for relative position embeddings
         self.window_size = config.window_size
 
         self.head_dim = self.embed_dim // self.num_heads
@@ -1645,12 +2017,14 @@ class VitsAttention(nn.Module):
                 f" and `num_attention_heads`: {self.num_heads})."
             )
 
+        # Create linear projections for query, key, value, and output
         self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=config.use_bias)
         self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=config.use_bias)
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=config.use_bias)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=config.use_bias)
 
         if self.window_size:
+            # Create learned relative position embeddings for keys and values
             self.emb_rel_k = nn.Parameter(torch.randn(1, self.window_size * 2 + 1, self.head_dim) * self.scaling)
             self.emb_rel_v = nn.Parameter(torch.randn(1, self.window_size * 2 + 1, self.head_dim) * self.scaling)
 
@@ -1670,10 +2044,21 @@ class VitsAttention(nn.Module):
         layer_head_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Compute multi-head attention with relative position terms and optional masks.
+        """
+        Compute multi-head attention with relative position terms and optional masks.
 
         Attention lets each text position use surrounding token context; masks exclude
         padding, while optional weights support diagnostics and model outputs.
+
+        Args:
+            hidden_states (torch.Tensor): Input tensor of shape (batch_size, sequence_length, embed_dim).
+            key_value_states (Optional[torch.Tensor]): Optional tensor for cross-attention.
+            attention_mask (Optional[torch.Tensor]): Mask to prevent attention to certain positions.
+            layer_head_mask (Optional[torch.Tensor]): Optional mask for attention heads.
+            output_attentions (bool): Whether to return attention weights.
+
+        Returns:
+            Tuple[torch.Tensor, Optional[torch.Tensor]]: Output tensor and optionally attention weights.
         """
 
         # if key_value_states are provided this layer is used as a cross-attention layer
@@ -1688,6 +2073,7 @@ class VitsAttention(nn.Module):
         key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
         value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
 
+        # reshape query, key, and value states for multi-head attention
         proj_shape = (bsz * self.num_heads, -1, self.head_dim)
         query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
         key_states = key_states.view(*proj_shape)
@@ -1696,28 +2082,34 @@ class VitsAttention(nn.Module):
         src_len = key_states.size(1)
         attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
 
+        # check attention weights shape
         if attn_weights.size() != (bsz * self.num_heads, tgt_len, src_len):
             raise ValueError(
                 f"Attention weights should be of size {(bsz * self.num_heads, tgt_len, src_len)}, but is"
                 f" {attn_weights.size()}"
             )
 
+        # apply the relative position bias if window size is specified
         if self.window_size is not None:
             key_relative_embeddings = self._get_relative_embeddings(self.emb_rel_k, src_len)
             relative_logits = torch.matmul(query_states, key_relative_embeddings.transpose(-2, -1))
             rel_pos_bias = self._relative_position_to_absolute_position(relative_logits)
             attn_weights += rel_pos_bias
 
+        # note that this mask is for padding, it's not a causal mask hiding future tokens
         if attention_mask is not None:
             if attention_mask.size() != (bsz, 1, tgt_len, src_len):
                 raise ValueError(
                     f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.size()}"
                 )
+            # add the attention mask to the attention weights
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
+        # softmax the attention weights to get attention probabilities
         attn_weights = nn.functional.softmax(attn_weights, dim=-1)
 
+        # apply the layer head mask if provided
         if layer_head_mask is not None:
             if layer_head_mask.size() != (self.num_heads,):
                 raise ValueError(
@@ -1737,6 +2129,7 @@ class VitsAttention(nn.Module):
         else:
             attn_weights_reshaped = None
 
+        # apply dropout to the attention probabilities
         attn_probs = nn.functional.dropout(attn_weights, p=self.dropout, training=self.training)
 
         attn_output = torch.bmm(attn_probs, value_states)
@@ -1747,6 +2140,7 @@ class VitsAttention(nn.Module):
                 f" {attn_output.size()}"
             )
 
+        # add relative position bias if window size is specified
         if self.window_size is not None:
             value_relative_embeddings = self._get_relative_embeddings(self.emb_rel_v, src_len)
             relative_weights = self._absolute_position_to_relative_position(attn_probs)
@@ -1817,10 +2211,15 @@ class VitsAttention(nn.Module):
 
 
 class VitsFeedForward(nn.Module):
-    """Apply the encoder's position-wise convolutional feed-forward network.
+    """
+    Apply the encoder's position-wise convolutional feed-forward network.
 
     The convolutional layers mix nearby token features after attention, adding
     nonlinear capacity needed to form text-conditioned latent statistics.
+
+    Two convolutional layers with activation and dropout are applied sequentially to each position.
+    The stacked convolutions help assess a wider local receptive field
+
     """
 
     def __init__(self, config):
@@ -1847,11 +2246,21 @@ class VitsFeedForward(nn.Module):
             self.padding = None
 
     def forward(self, hidden_states, padding_mask):
-        """Transform each sequence position while masking padding around convolutions.
+        """
+        Transform each sequence position while masking padding around convolutions.
 
         Padding masks are reapplied after convolutions so their receptive fields cannot
         propagate padded values into valid token representations.
+
+        Args:
+            hidden_states (torch.Tensor): Input tensor of shape (batch_size, sequence_length, hidden_size).
+            padding_mask (torch.FloatTensor): Mask to prevent attention to padding tokens.
+
+        Returns:
+            torch.Tensor: Output tensor of the same shape as hidden_states.
         """
+
+        # Apply padding mask to the input hidden states
         hidden_states = hidden_states.permute(0, 2, 1)
         padding_mask = padding_mask.permute(0, 2, 1)
 
@@ -1859,6 +2268,7 @@ class VitsFeedForward(nn.Module):
         if self.padding is not None:
             hidden_states = nn.functional.pad(hidden_states, self.padding)
 
+        # First convolution layer with activation and dropout
         hidden_states = self.conv_1(hidden_states)
         hidden_states = self.act_fn(hidden_states)
         hidden_states = self.dropout(hidden_states)
@@ -1867,6 +2277,7 @@ class VitsFeedForward(nn.Module):
         if self.padding is not None:
             hidden_states = nn.functional.pad(hidden_states, self.padding)
 
+        # Second convolution layer with activation and dropout (if any)
         hidden_states = self.conv_2(hidden_states)
         hidden_states = hidden_states * padding_mask
 
@@ -1875,18 +2286,21 @@ class VitsFeedForward(nn.Module):
 
 
 class VitsEncoderLayer(nn.Module):
-    """Combine relative self-attention and a convolutional feed-forward residual block.
+    """
+    Combine relative self-attention and a convolutional feed-forward residual block.
 
     Both sublayers use residual connections and normalization so the stack can learn
     contextual token representations while remaining stable at depth.
     """
 
     def __init__(self, config: VitsConfig):
-        """Create the attention, feed-forward, dropout, and layer-normalization modules.
+        """
+        Create the attention, feed-forward, dropout, and layer-normalization modules.
 
         These components match the VITS text encoder's two-stage transformer block.
         """
         super().__init__()
+        # initialize attention, feed-forward, and normalization layers
         self.attention = VitsAttention(config)
         self.dropout = nn.Dropout(config.hidden_dropout)
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
@@ -1905,6 +2319,7 @@ class VitsEncoderLayer(nn.Module):
         The output retains the input sequence shape for stacking; optional attention
         maps are included only when requested to avoid unnecessary storage.
         """
+        # apply self-attention with residual connection
         residual = hidden_states
         hidden_states, attn_weights = self.attention(
             hidden_states=hidden_states,
@@ -1915,6 +2330,7 @@ class VitsEncoderLayer(nn.Module):
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.layer_norm(residual + hidden_states)
 
+        # apply feed-forward network with residual connection
         residual = hidden_states
         hidden_states = self.feed_forward(hidden_states, padding_mask)
         hidden_states = self.dropout(hidden_states)
@@ -1929,7 +2345,8 @@ class VitsEncoderLayer(nn.Module):
 
 
 class VitsEncoder(nn.Module):
-    """Run a stack of VITS encoder layers with padding masks and optional layer outputs.
+    """
+    Run a stack of VITS encoder layers with padding masks and optional layer outputs.
 
     It centralizes layerdrop, gradient checkpointing, and output collection so the text
     encoder can train deep contextual representations efficiently.
@@ -1943,6 +2360,7 @@ class VitsEncoder(nn.Module):
         """
         super().__init__()
         self.config = config
+        # build a stack of encoder layers according to the configuration
         self.layers = nn.ModuleList([VitsEncoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
         self.layerdrop = config.layerdrop
@@ -1956,7 +2374,8 @@ class VitsEncoder(nn.Module):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutput]:
-        """Encode token features and optionally collect hidden states and attention maps.
+        """
+        Encode token features and optionally collect hidden states and attention maps.
 
         Expanded attention masks and padding masks keep padded positions excluded;
         optional outputs support diagnostics without burdening ordinary training.
@@ -1973,6 +2392,7 @@ class VitsEncoder(nn.Module):
 
         deepspeed_zero3_is_enabled = is_deepspeed_zero3_enabled()
 
+        # iterate over each encoder layer, applying layerdrop and gradient checkpointing as configured
         for encoder_layer in self.layers:
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
@@ -2022,14 +2442,16 @@ class VitsEncoder(nn.Module):
 
 
 class VitsTextEncoder(nn.Module):
-    """Turn token IDs into contextual features and text-conditioned prior statistics.
+    """
+    Turn token IDs into contextual features and text-conditioned prior statistics.
 
     The prior mean and log variance are later aligned with audio frames and transformed
     by the latent flow, making this encoder the text-to-latent entry point for VITS.
     """
 
     def __init__(self, config: VitsConfig):
-        """Create token embeddings, the transformer encoder, and prior-distribution projection.
+        """
+        Create token embeddings, the transformer encoder, and prior-distribution projection.
 
         The projection emits both Gaussian statistics for each token, which the
         alignment and flow stages need to synthesize speech.
@@ -2041,7 +2463,8 @@ class VitsTextEncoder(nn.Module):
         self.project = nn.Conv1d(config.hidden_size, config.flow_size * 2, kernel_size=1)
 
     def get_input_embeddings(self):
-        """Return the token embedding table used by the text encoder.
+        """
+        Return the token embedding table used by the text encoder.
 
         Transformers utilities use this accessor to inspect or resize the vocabulary
         embeddings without depending on the encoder's internal attribute name.
@@ -2049,7 +2472,8 @@ class VitsTextEncoder(nn.Module):
         return self.embed_tokens
 
     def set_input_embeddings(self, value):
-        """Replace the token embedding table, for example after resizing the vocabulary.
+        """
+        Replace the token embedding table, for example after resizing the vocabulary.
 
         Keeping this setter paired with the getter allows pretrained-model utilities
         to install resized embeddings consistently.
@@ -2306,6 +2730,9 @@ class VitsModel(VitsPreTrainedModel):
                 "Training of VITS is not supported by this model. See `VitsModelForPreTraining`."
             )
 
+        # Encode the input text to obtain hidden states and prior distributions for the latent variables.
+        # the hidden states will be used for duration prediction 
+        # the prior distributions will be used for sampling latent variables during training.
         text_encoder_output = self.text_encoder(
             input_ids=input_ids,
             padding_mask=input_padding_mask,
@@ -2320,6 +2747,7 @@ class VitsModel(VitsPreTrainedModel):
         prior_means = text_encoder_output[1] if not return_dict else text_encoder_output.prior_means
         prior_log_variances = text_encoder_output[2] if not return_dict else text_encoder_output.prior_log_variances
 
+        # get log durations from the duration predictor
         if self.config.use_stochastic_duration_prediction:
             log_duration = self.duration_predictor(
                 hidden_states,
@@ -2354,6 +2782,7 @@ class VitsModel(VitsPreTrainedModel):
         prior_means = torch.matmul(attn.squeeze(1), prior_means).transpose(1, 2)
         prior_log_variances = torch.matmul(attn.squeeze(1), prior_log_variances).transpose(1, 2)
 
+        # sample latent variables from the prior distribution using the reparameterization trick
         prior_latents = prior_means + torch.randn_like(prior_means) * torch.exp(prior_log_variances) * self.noise_scale
         latents = self.flow(prior_latents, output_padding_mask, speaker_embeddings, reverse=True)
 
@@ -2391,13 +2820,18 @@ class VitsDiscriminator(VitsPreTrainedModel):
         """
         super().__init__(config)
 
+        # Initialize the list of discriminators based on the configuration.
+
+        # the single VitsHifiGanDiscriminatorScaleResidualBlock instance handles multiple scales internally
         if config.discriminator_scale_channels is not None:
             self.discriminators = nn.ModuleList(
                 [VitsHifiGanDiscriminatorScaleResidualBlock(config.discriminator_scale_channels, config.leaky_relu_slope)]
             )
         else:
             self.discriminators = nn.ModuleList([])
-        
+
+        # each instance of VitsHifiGanDiscriminatorPeriodResidualBlock handles a specific period length
+        # create several period discriminators, one for each period specified in the configuration
         self.discriminators.extend(
             [
                 VitsHifiGanDiscriminatorPeriodResidualBlock(
@@ -2416,6 +2850,18 @@ class VitsDiscriminator(VitsPreTrainedModel):
 
         Scores drive the real-versus-generated loss; feature maps let the generator
         match discriminator activations on real audio.
+
+        Here, the hidden states are the input audio representations. I.e. the waveform tensor
+        (the actual audio signal) is passed as the hidden states to the discriminator.
+
+        It has shape (batch_size, num_channels, sequence_length)
+
+
+        Args:
+            hidden_states (torch.Tensor): The input hidden states to be discriminated.
+
+        Returns:
+            Tuple[List[torch.Tensor], List[List[torch.Tensor]]]: A tuple containing the list of discriminator scores and the list of intermediate feature maps for each branch.
         """
         fmaps = []
         discriminated_hidden_states_list = []
@@ -2612,6 +3058,7 @@ class VitsModelForPreTraining(VitsPreTrainedModel):
         frames, samples the latent flow, and decodes audio; it is used when no training
         spectrogram labels are supplied.
         """
+        # Encode the input text to obtain hidden states and prior statistics.
         text_encoder_output = self.text_encoder(
             input_ids=input_ids,
             padding_mask=padding_mask,
@@ -2626,6 +3073,7 @@ class VitsModelForPreTraining(VitsPreTrainedModel):
         prior_means = text_encoder_output[1] if not return_dict else text_encoder_output.prior_means
         prior_log_variances = text_encoder_output[2] if not return_dict else text_encoder_output.prior_log_variances
 
+        # feed the text-encoded hidden states and speaker embeddings into the duration predictor to estimate token durations
         if self.config.use_stochastic_duration_prediction:
             log_duration = self.duration_predictor(
                 hidden_states,
@@ -2638,15 +3086,17 @@ class VitsModelForPreTraining(VitsPreTrainedModel):
             log_duration = self.duration_predictor(hidden_states, input_padding_mask, speaker_embeddings)
 
         length_scale = 1.0 / self.speaking_rate
+        # Compute the predicted duration for each token and clamp the minimum length to 1.
         duration = torch.ceil(torch.exp(log_duration) * input_padding_mask * length_scale)
         predicted_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
 
-        # Create a padding mask for the output lengths of shape (batch, 1, max_output_length)
+        # Create a padding mask for the output lengths of shape (batch, 1, max_output_length) based on the predicted lengths.
         indices = torch.arange(predicted_lengths.max(), dtype=predicted_lengths.dtype, device=predicted_lengths.device)
         output_padding_mask = indices.unsqueeze(0) < predicted_lengths.unsqueeze(1)
         output_padding_mask = output_padding_mask.unsqueeze(1).to(input_padding_mask.dtype)
 
-        # Reconstruct an attention tensor of shape (batch, 1, out_length, in_length)
+        # Reconstruct an attention tensor of shape (batch, 1, out_length, in_length) to align input tokens with output frames.
+        # note that a "duration-based alignment" is a better name than attention for this operation.
         attn_mask = torch.unsqueeze(input_padding_mask, 2) * torch.unsqueeze(output_padding_mask, -1)
         batch_size, _, output_length, input_length = attn_mask.shape
         cum_duration = torch.cumsum(duration, -1).view(batch_size * input_length, 1)
@@ -2656,7 +3106,7 @@ class VitsModelForPreTraining(VitsPreTrainedModel):
         padded_indices = valid_indices - nn.functional.pad(valid_indices, [0, 0, 1, 0, 0, 0])[:, :-1]
         attn = padded_indices.unsqueeze(1).transpose(2, 3) * attn_mask
 
-        # Expand prior distribution
+        # Expand prior distribution to match the output length using the attention tensor.
         prior_means = torch.matmul(attn.squeeze(1), prior_means).transpose(1, 2)
         prior_log_variances = torch.matmul(attn.squeeze(1), prior_log_variances).transpose(1, 2)
 

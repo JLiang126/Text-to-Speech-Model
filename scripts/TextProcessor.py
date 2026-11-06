@@ -55,26 +55,6 @@ def configure_word_mismatch_warnings(suppress: bool) -> None:
         logger.removeFilter(word_mismatch_filter)
 
 
-# 178 symbol vocabulary from the official VITS implementation (jaywalnut310/vits text/symbols.py)
-# Ensures input embedding compatibility with pretrained VCTK VITS checkpoints
-# note that the official checkpoint is NOT USED. This is retained for reference only.
-VITS_SYMBOLS_official = (
-    ["_"] # Pad
-    + list(';:,."!?¡¿—…"«»“” ') # Punctuation 
-    + list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") # Letters
-    + list("ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘'̩'ᵻ") # IPA Letters
-)
-
-# 178 symbols matching the corrected VCTK checkpoint vocabulary for ylacombe/vits-vctk-with-discriminator
-# The unused duplicate-apostrophe slot at ID 174 is reserved for <unk>.
-# see vocab.json in the ylacombe/vits-vctk-with-discriminator HuggingFace repository for reference
-VITS_SYMBOLS = (
-    ["_"] # Pad
-    + list(';:,.!?¡¿—…"«»“” ') # Punctuation
-    + list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") # Letters
-    + list("ɑɐɒæɓʙβɔɕçɗɖðʤəɘɚɛɜɝɞɟʄɡɠɢʛɦɧħɥʜɨɪʝɭɬɫɮʟɱɯɰŋɳɲɴøɵɸθœɶʘɹɺɾɻʀʁɽʂʃʈʧʉʊʋⱱʌɣɤʍχʎʏʑʐʒʔʡʕʢǀǁǂǃˈˌːˑʼʴʰʱʲʷˠˤ˞↓↑→↗↘") # IPA Letters
-    + ["<unk>", "\u0329", "'", "ᵻ"]
-)
 
 
 def replace_brackets(match: re.Match[str]) -> str:
@@ -145,6 +125,10 @@ def load_vctk_tokenizer(checkpoint: str) -> VitsTokenizer:
     Note that this fix specifically addresses the ID collision between the 
     "<unk>" token and the phoneme "ᵻ" in the pretrained VCTK tokenizer. 
 
+    Essentially the token vocabulary was not contiguous, leaving a gap between the IDs of the 
+    unknown token and the stroke-i phoneme. It's not an issue if unknown tokens are not used during 
+    training or inference, however it's a good idea to fix it.
+
     Note that this issue was identified by debugging with AI (Github Copilot Sol 6.1) during
     development, however the code is original.
     """
@@ -154,7 +138,7 @@ def load_vctk_tokenizer(checkpoint: str) -> VitsTokenizer:
         added_tokens_decoder={174: AddedToken("<unk>", normalized=False, special=True),},
     )
 
-    # verify that the special token mappings are correct
+    # verify that the special token mappings are what we expect
     if tokenizer.encoder.get("ᵻ") != 177:
         raise ValueError("Unexpected checkpoint mapping for ᵻ")
     # raise an error if ID 174 is occupied by a pretrained symbol other than "<unk>"
@@ -169,71 +153,3 @@ def load_vctk_tokenizer(checkpoint: str) -> VitsTokenizer:
     tokenizer.decoder[174] = "<unk>" 
     tokenizer.add_special_tokens({"unk_token": "<unk>"}) # Register the unknown token with the tokenizer to refresh vocabulary metadata
     return tokenizer
-
-
-class TextProcessor:
-    """
-    Converts normalised text to IPA phonemes using espeak. Intersperses blank tokens for VITS Monotonic Alignment Search.
-    
-    NOTE:
-    The checkpoint already comes with its own tokenization and symbol set, so we'll just 
-    use that instead.
-    
-    This is not a drop-in replacement for the built-in tokeniser, as the training
-    script expects certain methods/attributes to be available on the tokeniser object
-
-    The espeak library version may be different, which can affect pronunciation output.
-
-    The code is retained as a reference to explain the general phonemization process used by VITS.
-    
-    """
-    def __init__(self, add_blank: bool = True): # Can built for a possible investigation into the affects for the blank interspered tokens (Can remove)
-        self.add_blank = add_blank
-        self.symbols = VITS_SYMBOLS
-        self.symbol_to_id = {s: i for i, s in enumerate(self.symbols)}
-        self.id_to_symbol = {i: s for i, s in enumerate(self.symbols)}
-        self.blank_id = 0
-        self._backend = None
-
-    @property
-    def vocab_size(self) -> int: return len(self.symbols)
-
-    def _init_espeak(self) -> None:
-        """Initialises the eSpeak-ng phonemiser backend."""
-        if self._backend is None:
-            import espeakng_loader
-            from phonemizer.backend import EspeakBackend
-            from phonemizer.backend.espeak.wrapper import EspeakWrapper
-
-            EspeakWrapper.set_library(espeakng_loader.get_library_path())
-            EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
-
-            # Matches official VITS settings
-            self._backend = EspeakBackend(language="en-us", preserve_punctuation=True, with_stress=True)
-
-    def phonemize_text(self, text: str) -> str:
-        """Converts english text into IPA phonemes using the espeak engine mirroring VITS."""
-        self._init_espeak()
-        ipa_phonemes = self._backend.phonemize([text], strip=True)
-        return ipa_phonemes[0] if ipa_phonemes else ""
-
-    def text_to_sequence(self, text: str, is_cleaned: bool = False) -> torch.LongTensor:
-        """Converts text into a 1D  of VITS IPA token IDs."""
-        clean_text = text if is_cleaned else clean_normalised_text(text, lowercase=True)
-        ipa_str = self.phonemize_text(clean_text)
-
-        sequence = [self.symbol_to_id[c] for c in ipa_str if c in self.symbol_to_id]
-        if not sequence: sequence = [self.symbol_to_id.get(" ", 0)]
-
-        if self.add_blank:
-            interspersed = [self.blank_id] * (len(sequence) * 2 + 1)
-            interspersed[1::2] = sequence
-            sequence = interspersed
-
-        return torch.LongTensor(sequence)
-
-    # For sanity checks
-    def sequence_to_text(self, sequence: Union[torch.Tensor, List[int]]) -> str:
-        """Reconstructs readable IPA string from tokens."""
-        ids = sequence.tolist() if isinstance(sequence, torch.Tensor) else list(sequence)
-        return "".join(self.id_to_symbol.get(i, "") for i in ids if i != self.blank_id)

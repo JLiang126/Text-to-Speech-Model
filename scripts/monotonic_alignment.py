@@ -22,6 +22,18 @@ is purely deterministic based on the score matrix.
 The individual scores are log-likelihoods of the alignment between frames and tokens. Therefore,
 accumulated scores represent the log-likelihood of the entire alignment path.
 
+In summary:
+MAS compares the Gaussian distributions predicted by the text encoder with zp samples 
+obtained by sampling z from the posterior encoder and transforming them through the 
+normalising flow
+
+This script has been adapted from ylacombe/finetune-hf-vits/monotonic_align/core.pyx.
+The main changes are:
+- converting the Cython implementation to pure Python, 
+- adding comments for clarity
+- providing optional Numba acceleration for performance without the heavy dependency on Cython compilers
+- adding the maximum_path function as a wrapper for the alignment computation, performing some basic 
+    checks and converting between pytorch tensors and numpy arrays (potentially swapping from gpu to cpu)
 """
 
 import logging

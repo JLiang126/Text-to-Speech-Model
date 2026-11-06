@@ -5,14 +5,38 @@ Run from the repository root:
     python -m scripts.train_model
     accelerate launch scripts/train_model.py
 
-The default settings are loaded from configs/train.yaml. --config can select
-another YAML object containing training settings. `--output-mode restart`
-starts a fresh run, and `new` requires an empty output root. The default mode
-is `restart`. Run files are written under `<output_dir>/run`, while listening
+The default settings are loaded from configs/best_speaker_embedding.yaml. 
+"--config" 
+    can select another YAML object containing training settings. 
+"--output-mode" 
+    "restart" starts a fresh run, and 
+    "new" requires an empty output root, otherwise an error is raised.
+The default mode is `restart`. 
+
+Run files are written under `<output_dir>/run`, including configs, logs, and the final checkpoint.
+Intermediate checkpoints are saved in the "intermediate_checkpoints" directory.
+Data split manifests are written in the "splits" directory under the output root.
 samples and intermediate checkpoints are written beside `run`.
-The loader reuses existing split manifests without comparing saved settings.
-Training progress is reported in the console, with three fixed validation
-phrases synthesized per epoch and their text and phonemes saved in listening_samples.json.
+
+Evaluation of both the training and validation sets are done once per epoch.
+An intermediate checkpoint is saved at the end of each epoch.
+
+This script has been adapted from ylacombe/finetune-hf-vits/run_vits_finetuning.py,
+predominantly for its loss calculation functions and general training loop structure.
+
+The main changes are:
+- Deleted data loading and preprocessing logic. This has been re-implemented elsewhere in the project.
+- Greatly simplified the training loop to eliminate fluff that's not essential for fine-tuning on 
+    a small number of epochs, such as resuming from earlier checkpoints, complex learning rate schedules, 
+    evaluation at arbitrary intervals, the ability to train across multiple GPUs etc
+- Explicity enabled asynchronous data loading (pinned memory=True and non-blocking transfers) to improve
+ GPU utilization.
+- Added an option to enable test mode, which runs a single epoch on a reduced dataset for quick 
+validation of the training setup.
+- Added an option to adjust the layerdrop rate in the text encoder (default 0.1 in the original training recipe)
+- Added an option to freeze certain layers of the model during fine-tuning to reduce computational load 
+    and prevent overfitting.
+- Added an option to vary the learning rate of the learned speaker embedding relative to the rest of the model.
 """
 
 
@@ -116,9 +140,11 @@ def load_data(cfg, tokenizer, num_workers, speaker_id, segment_frames):
         speaker_id=speaker_id,
         segment_frames=segment_frames,
     )
+    # check the training loader for emptiness
     if not len(loaders["train"].dataset):
         raise ValueError("The training split is empty. Check duration limits, subset size and split ratios.")
 
+    # check the evaluation loader for emptiness
     eval_loader = loaders["val"] if cfg.do_eval else None
     if eval_loader is not None and not len(eval_loader.dataset):
         raise ValueError("The validation split is empty. Increase the subset or validation ratio.")
@@ -126,6 +152,26 @@ def load_data(cfg, tokenizer, num_workers, speaker_id, segment_frames):
 
 
 def discriminator_loss(real_outputs, generated_outputs):
+    """
+    Compute the discriminator loss for real and generated outputs using a least-squares GAN objective.
+
+    This works by encouraging the discriminator to output values close to 1 for real audio and 
+    close to 0 for generated audio, using a least-squares loss. I.e. it helps the discriminator 
+    learn to distinguish real from generated audio effectively, which indirectly improves the generator's 
+    output quality over repeated training iterations.
+
+    This loss ONLY applies to the discriminator and does not affect the generator directly.
+    The generator is frozen with respect to this loss and is not updated based on it.
+
+    Args:
+        real_outputs (list of torch.Tensor): Discriminator outputs for real audio.
+        generated_outputs (list of torch.Tensor): Discriminator outputs for generated audio.
+
+    Returns:
+        torch.Tensor: The computed discriminator loss.
+    
+    Function taken from ylacombe/finetune-hf-vits/run_vits_finetuning.py with comments added for clarity.
+    """
     # Least-squares GAN objective: real audio should score near 1, generated
     # audio near 0. Sum across the discriminator's multiple output scales.
     return sum(
@@ -135,15 +181,72 @@ def discriminator_loss(real_outputs, generated_outputs):
 
 
 def kl_loss(outputs):
+    """
+    Compute the KL divergence loss between the posterior and prior latent distributions.
+
+    This loss encourages the posterior latent distribution (derived from speech), after transformation
+    through the normalizing flow, to match the text-conditioned prior.
+    This regularises the latent space and helps ensure that latents generated from text at inference are
+    consistent with those used to reconstruct speech during training.
+
+    Computes a sample-based KL objective between the flow-transformed speech posterior and the 
+    text-conditioned Gaussian prior.
+
+    I.e instead of comparing two distributions, we draw a sample from the posterior and evaluate its 
+    likelihood under the prior.
+    This is done because the normalizing flow makes the posterior distribution complex and generally
+    non-Gaussian, so we can't just compute a closed-form KL divergence 
+
+    The equation for this is: 
+    KL(posterior || prior) = sum(prior_log_variances - posterior_log_variances - 0.5 + 0.5 * (prior_latents - prior_means)^2 / exp(2 * prior_log_variances))
+    - prior_log_variances: Log standard deviation (log σ_p) of the text-conditioned Gaussian prior.
+    - posterior_log_variances: Log standard deviation (log σ_q) of the speech-conditioned Gaussian posterior.
+    - prior_latents: Flow-transformed posterior samples z_p = f(z), where z is sampled from the speech-conditioned posterior.
+    - prior_means: Mean (μ_p) of the text-conditioned Gaussian prior.
+    
+    Note there is no log-jacobian term, since a volume-preserving flow is assumed.
+
+    Args:
+        outputs: Model outputs containing posterior and prior latent distributions and padding mask.
+
+    Returns:
+        torch.Tensor: The computed KL divergence loss.
+
+
+    Function taken from ylacombe/finetune-hf-vits/run_vits_finetuning.py with comments added for clarity.
+    """
     # Compare posterior and prior latent distributions, excluding padded frames.
-    prior_log = outputs.prior_log_variances.float()
+    prior_log = outputs.prior_log_variances.float() 
+    # Compute the element-wise KL divergence between the posterior and prior distributions.
     kl = prior_log - outputs.posterior_log_variances.float() - 0.5
     kl += 0.5 * (outputs.prior_latents.float() - outputs.prior_means.float()) ** 2 * torch.exp(-2 * prior_log)
+    # Apply the padding mask to exclude padded frames from the KL loss computation.
     mask = outputs.labels_padding_mask
     return (kl * mask).sum() / mask.sum()
 
 
 def reconstruction_losses(outputs, batch, audio_processor, segment_frames):
+    """
+    Compute the reconstruction losses for the generated audio. This is done on the 
+    log mel spectrograms of the audio segments.
+    
+    I.e. it computes the L1 norm between the generated and target log mel spectrograms.
+    These are 2D tensors with shape (batch_size, num_mel_bins, num_frames).
+
+    Note that VITS generates a fixed-length audio segment from a randomly selected slice
+    of the latent sequence. 
+
+    Args:
+        outputs: Model outputs containing generated waveform and latent distributions.
+        batch: Input batch containing target mel spectrograms.
+        audio_processor: Audio processor used to compute spectrograms.
+        segment_frames: Number of frames in the audio segment.
+
+    Returns:
+        tuple: L1 mel reconstruction loss and KL divergence loss.
+
+    Function taken from ylacombe/finetune-hf-vits/run_vits_finetuning.py with comments added for clarity.
+    """
     # Align target and generated mel features to the model's sampled audio
     # segment, then pair reconstruction loss with the latent KL regularizer.
     target_mel = slice_segments(batch["mel_padded"], outputs.ids_slice, segment_frames)
@@ -156,15 +259,59 @@ def reconstruction_losses(outputs, batch, audio_processor, segment_frames):
 
 
 def generator_losses(outputs, real_maps, generated_maps, generated_scores, mel_loss, latent_loss, cfg):
+    """
+    Compute the generator loss combining duration, mel, KL, feature-matching, and adversarial objectives.
+
+    Duration loss: stochastic duration negative log-likelihood loss (variational upper bound)
+    The duration predictor predicts probability distributions of plausible durations for each token.
+    The loss calculates how well the predicted duration distributions match the target durations provided by
+    the monotonic alignment between text and audio.
+    Has a jacobian term that accounts for the change of variables in the duration prediction (uses a 
+    normalizing flow). 
+    Also has a posterior correction term that accounts for the difference between the predicted and actual durations.
+
+    Adversarial loss: simply how well the generator fools the discriminator into classifying 
+    generated audio as real. I.e. root mean square error between the discriminator's output 
+    and the target label of 1.0 for real audio.
+
+    Feature-matching loss: measures the discrepancy between the discriminator's intermediate 
+    feature maps for real and generated audio. 
+    Uses L1 loss to measure the difference between the feature maps of real and generated audio,
+    i.e. the L1 norm of the difference between corresponding feature maps (|real - generated|).
+    It's multiplied by a weight factor (usually 2) to balance its contribution relative to other loss terms.
+    It gives a richer training signal to the generator by encouraging it to match the internal representations of real audio, not just the final discriminator output.
+
+    Args:
+        outputs: Model outputs containing log duration and other relevant information.
+        real_maps: List of discriminator feature maps for real audio.
+        generated_maps: List of discriminator feature maps for generated audio.
+        generated_scores: List of discriminator scores for generated audio.
+        mel_loss: L1 mel reconstruction loss.
+        latent_loss: KL divergence loss.
+        cfg: Configuration object containing loss weights.
+
+    Returns:
+        dict: Dictionary containing individual loss components and the total generator loss.
+
+    Function taken from ylacombe/finetune-hf-vits/run_vits_finetuning.py with comments added for clarity.
+    """
     # Combine duration, mel, KL, feature-matching, and adversarial objectives.
     # Config weights make the relative contribution of each term explicit.
+
+    # duration loss is calculated as the sum of the log duration predictions from the model.
     duration_loss = outputs.log_duration.float().sum()
+    # feature matching loss
+    # outer loop iterates over the layers of the discriminator's feature maps for real and generated audio
+    # inner loop iterates over the individual feature maps within each layer
+    # each element in the inner loop corresponds to a feature map from the real and generated audio
     feature_loss = 2 * sum(
         F.l1_loss(generated.float(), real.detach().float())
         for real_layers, generated_layers in zip(real_maps, generated_maps)
         for real, generated in zip(real_layers, generated_layers)
     )
+    # calculate the adversarial loss for the generator based on the discriminator's scores for generated audio
     adversarial_loss = sum(((1 - score.float()) ** 2).mean() for score in generated_scores)
+    # weight the loss components according to the configuration before summing them to get the total loss
     total = (
         cfg.weight_duration * duration_loss + cfg.weight_mel * mel_loss
         + cfg.weight_kl * latent_loss + cfg.weight_fmaps * feature_loss
@@ -177,6 +324,16 @@ def generator_losses(outputs, real_maps, generated_maps, generated_scores, mel_l
 
 
 def accumulate_losses(totals, losses, batch_size, accelerator):
+    """
+    Accumulate losses over multiple batches for logging and averaging.
+
+    Args:
+        totals: Tensor storing accumulated losses and count.
+        losses: Dictionary of individual loss components for the current batch.
+        batch_size: Number of samples in the current batch.
+        accelerator: Accelerator object for distributed training.
+
+    """
     values = torch.stack([losses[name].detach().float() for name in LOSS_NAMES])
     if not torch.isfinite(values).all():
         raise FloatingPointError("Logged losses contain non-finite values.")
@@ -186,6 +343,16 @@ def accumulate_losses(totals, losses, batch_size, accelerator):
 
 
 def averaged_losses(totals):
+    """
+    Compute the averaged losses from the accumulated totals.
+
+    Args:
+        totals: Tensor storing accumulated losses and count.
+
+    Returns:
+        dict: Dictionary containing averaged loss values for each loss component.
+
+    """
     if totals[-1] == 0:
         raise ValueError("Cannot average losses from an empty loader.")
     return {name: (totals[i] / totals[-1]).item() for i, name in enumerate(LOSS_NAMES)}
@@ -244,6 +411,7 @@ def make_scheduler(optimizer, cfg, total_steps):
         return max(0.0, (total_steps - step) / max(1, total_steps - warmup_steps))
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, scale)
+
 
 
 @torch.no_grad()
@@ -369,7 +537,7 @@ def main():
         model.gradient_checkpointing_enable()
 
 
-    # WIP code. This freezes everything in the model EXCEPT for the speaker embedding.
+    # This freezes everything in the model EXCEPT for the speaker embedding.
     # Could be useful to test whether the generator is already good at generating speech for a given speaker,
     # and we just need to learn an embedding that represents the target speaker.
     # In theory it may produce higher quality since the training is much more focused.
@@ -428,20 +596,12 @@ def main():
     # isolate parameters associated with the speaker embeddings
     speaker_params = list(model.embed_speaker.parameters())
     speaker_param_ids = {id(p) for p in speaker_params}
-    # set the weight decay to zero for speaker embeddings if only they are being unfrozen
-    # this is useful in that all the other speakers remain unchanged
-    # however, it removes the regularization effect of weight decay on the speaker embeddings
-    dynamic_embedding_weight_decay = False
-    if dynamic_embedding_weight_decay:
-        embedding_weight_decay = 0.0 if cfg.freeze_mode == "unfreeze_speech_embeddings_only" else 0.01
-    else:
-        embedding_weight_decay = 0.01
 
     # set a different learning rate for speaker embedding parameters if needed
     gen_optimizer = torch.optim.AdamW(
         [
             {"params": [p for p in model.parameters() if p.requires_grad and id(p) not in speaker_param_ids],},
-            {"params": speaker_params,"lr": cfg.learning_rate * cfg.speaker_embedding_lr_ratio, "weight_decay": embedding_weight_decay},
+            {"params": speaker_params,"lr": cfg.learning_rate * cfg.speaker_embedding_lr_ratio},
         ],
         lr=cfg.learning_rate, betas=(cfg.adam_beta1, cfg.adam_beta2),
     )
@@ -491,6 +651,7 @@ def main():
     history_columns = ["epoch", *LOSS_NAMES]
     training_loss_history = pd.DataFrame(columns=history_columns)
     validation_loss_history = pd.DataFrame(columns=history_columns)
+
     # Only one process should write shared config/tokenizer files.
     if accelerator.is_main_process:
         # Only the main process should write the training configuration and tokenizer files.
@@ -599,12 +760,7 @@ def main():
                 global_step += 1
                 progress.update(1) # increment progress bar by one step
                 progress.set_postfix(gen=f"{gen_loss.item():.3f}", disc=f"{disc_loss.item():.3f}") # display current generator and discriminator losses in the progress bar
-                if cfg.do_eval and global_step % cfg.eval_steps == 0: # perform evaluation at the specified interval
-                    # Evaluate the model on the validation set at the specified interval
-                    metrics = evaluate(model, discriminator, eval_loader, alignment, audio_processor,
-                                       speaker_id, segment_frames, accelerator, cfg)
-                    if accelerator.is_main_process:
-                        logger.info("Step %s: validation %s", global_step, metrics)
+
 
         # -------- Validate and save epoch outputs. ----------
         train_metrics = averaged_losses(epoch_loss_totals)
@@ -625,6 +781,7 @@ def main():
         training_loss_history.loc[len(training_loss_history)] = {"epoch": epoch + 1, **train_metrics,}
         validation_loss_history.loc[len(validation_loss_history)] = {
             "epoch": epoch + 1,**({name: None for name in LOSS_NAMES} if validation_metrics is None else validation_metrics)}
+     
         # save the current epoch's model checkpoint
         # note that this doesn't save the discriminator, so it's not a resumable checkpoint
         # it's more for assessing intermediate quality if needed

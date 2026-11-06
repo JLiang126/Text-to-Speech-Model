@@ -5,6 +5,8 @@ Largely unchanged from the original VITS implementation.
 Defines the sizes and numbers of layers, attention heads, and other architectural parameters for the VITS model 
 so that we can load the desired checkpoint correctly.
 
+This script was taken from ylacombe/finetune-hf-vits/utils/configuration_vits.py.
+
 """
 
 
