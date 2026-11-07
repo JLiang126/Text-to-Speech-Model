@@ -26,5 +26,4 @@ PROMPTS: List[Tuple[str, str]] = [
 ]
 
 
-def prompt_texts() -> List[str]:
-    return [text for _, text in PROMPTS]
+def prompt_texts() -> List[str]: return [text for _, text in PROMPTS]

@@ -36,8 +36,7 @@ def _cpu_name() -> str:
                         return line.split(":", 1)[1].strip()
         if system == "Darwin":
             return subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip()
-    except Exception:
-        pass
+    except Exception: pass
     return platform.processor() or "unknown"
 
 
@@ -49,11 +48,13 @@ def describe_device(device: str) -> Dict[str, object]:
         "device": str(device), "cpu": _cpu_name(), "torch_threads": torch.get_num_threads(),
         "torch": torch.__version__, "python": platform.python_version(), "os": platform.platform(),
     }
+
     if str(device).startswith("cuda") and torch.cuda.is_available():
         index = torch.device(device).index or 0
         props = torch.cuda.get_device_properties(index)
         info.update(gpu=torch.cuda.get_device_name(index), cuda=torch.version.cuda,
                     gpu_memory_gb=round(props.total_memory / 1e9, 1))
+        
     return info
 
 
@@ -64,21 +65,19 @@ def device_tag(device: str) -> str:
 
 def _synchroniser(device: str) -> Callable[[], None]:
     import torch
-    if str(device).startswith("cuda"):
-        return lambda: torch.cuda.synchronize(device)
-    if str(device).startswith("mps"):
-        return torch.mps.synchronize
+    if str(device).startswith("cuda"): return lambda: torch.cuda.synchronize(device)
+    if str(device).startswith("mps"): return torch.mps.synchronize
     return lambda: None
 
 
 def measure_latency(synthesize: SynthesizeFn, texts: Sequence[str], sample_rate: int,
                     device: str = "cpu", n_warmup: int = 3, n_repeats: int = 5) -> pd.DataFrame:
     """Times ``synthesize(text) -> (audio, info)`` and returns one row per timed call."""
-    if not texts:
-        raise ValueError("measure_latency needs at least one text")
+    if not texts: raise ValueError("measure_latency needs at least one text")
+
     sync = _synchroniser(device)
-    for i in range(n_warmup):
-        synthesize(texts[i % len(texts)])
+    for i in range(n_warmup): synthesize(texts[i % len(texts)])
+
     rows: List[Dict[str, float]] = []
     for text_id, text in enumerate(texts):
         for repeat in range(n_repeats):
@@ -93,6 +92,7 @@ def measure_latency(synthesize: SynthesizeFn, texts: Sequence[str], sample_rate:
                    "rtf": latency / audio_s if audio_s > 0 else float("nan")}
             row.update({k: float(v) for k, v in (info or {}).items() if k.endswith("_s")})
             rows.append(row)
+
     return pd.DataFrame(rows)
 
 
@@ -110,6 +110,7 @@ def summarise_latency(runs: pd.DataFrame) -> Dict[str, float]:
         "rtf_median": float(runs["rtf"].median()),
         "rtf_aggregate": float(runs["latency_s"].sum() / runs["audio_s"].sum()),
     }
-    if "frontend_s" in runs.columns:
+
+    if "frontend_s" in runs.columns: 
         summary["frontend_share"] = float(runs["frontend_s"].sum() / runs["latency_s"].sum())
     return summary

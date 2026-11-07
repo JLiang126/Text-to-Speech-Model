@@ -1,6 +1,5 @@
-# Extra packages for evaluation (on top of requirements.txt). Tested together with
-# torch 2.14.1, numpy 2.5, pandas 3.0 on Python 3.13.
-#   pip install -r requirements.txt -r requirements-eval.txt
+# Evaluation dependency subset for environments that install evaluation tools separately.
+# These are also included in the complete root requirements.txt.
 librosa==1.0.0          # mel spectrogram + DTW for MCD
 soundfile==0.14.0       # wav read/write
 scipy==1.18.1           # resampling, DCT, Wilcoxon test

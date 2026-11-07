@@ -48,7 +48,7 @@ Every script takes `--model`, a Hugging Face-format VITS (`transformers.VitsMode
 ## Single-system commands (from the repo root)
 
 ```bash
-pip install -r requirements.txt -r requirements-eval.txt
+pip install -r requirements.txt
 
 # Rank the VCTK speakers against LJSpeech (quick CPU check; GPU: --n_utts 0 --device cuda)
 python scripts/rank_speakers.py --n_utts 5

@@ -41,16 +41,18 @@ VCTK_N_SPEAKERS = 109  # embedding table size of the official VCTK checkpoint (a
 def reference_centroid(embed: Callable[[np.ndarray], np.ndarray], manifest_path: Union[str, Path],
                        data_root: Optional[Union[str, Path]] = None, n_ref: int = 50,
                        seed: int = 1234) -> np.ndarray:
-    """'The LJSpeech voice': mean embedding of ``n_ref`` real clips sampled (seeded) from a manifest.
-
+    """
+    The LJSpeech voice': mean embedding of ``n_ref`` real clips sampled (seeded) from a manifest.
     Use the *train* manifest so no test sentence is part of the reference.
     """
     ref = load_manifest(manifest_path, data_root)
     ref = ref.sample(n=min(n_ref, len(ref)), random_state=seed)
     embeddings = []
+
     for wav_path in ref["wav_path"]:
         audio, sr = load_audio(wav_path)
         embeddings.append(embed(resample(prepare(audio, sr), sr, ASR_SR)))
+
     return speaker_centroid(embeddings)
 
 
@@ -118,8 +120,10 @@ def rank_speakers(paired: np.ndarray, speaker_ids: Sequence[int], eligible: Opti
                           "similarity": mean, "ci_low": ci_low, "ci_high": ci_high,
                           "rank_ci_low": rank_lo, "rank_ci_high": rank_hi,
                           "p_closest": p_closest, "p_furthest": p_furthest, "n_utts": n_utts})
+    
     table = table.sort_values(["eligible", "rank", "similarity"], ascending=[False, True, False],
                               na_position="last").reset_index(drop=True)
+    
     table["rank"] = table["rank"].astype("Int64")
     return table
 
@@ -127,8 +131,8 @@ def rank_speakers(paired: np.ndarray, speaker_ids: Sequence[int], eligible: Opti
 def _mean_pairwise_cosine(unit_vectors: np.ndarray) -> np.ndarray:
     """Mean cosine over all pairs i < j along axis -2, using sum_{i!=j} u_i.u_j = |sum u|^2 - n."""
     n = unit_vectors.shape[-2]
-    if n < 2:
-        return np.full(unit_vectors.shape[:-2], np.nan)
+    if n < 2: return np.full(unit_vectors.shape[:-2], np.nan)
+
     total = unit_vectors.sum(axis=-2)
     return (np.sum(total * total, axis=-1) - n) / (n * (n - 1))
 
@@ -142,8 +146,8 @@ def similarity_baselines(synth_emb: np.ndarray, real_emb: np.ndarray,
     different_synthetic_speakers  two VCTK voices, same sentence: the level of "different speakers"
     """
     synth = _unit(synth_emb)
-    if eligible is not None:
-        synth = synth[np.asarray(eligible, bool)]
+    if eligible is not None: synth = synth[np.asarray(eligible, bool)]
+
     real = _unit(real_emb)
     return {"real_vs_real": float(_mean_pairwise_cosine(real)),
             "same_synthetic_speaker": float(np.mean(_mean_pairwise_cosine(synth))),
@@ -156,12 +160,13 @@ def pitch_groups(table: pd.DataFrame, threshold_hz: float = 160.0) -> Dict[str, 
     The groups are inferred from the synthetic audio, not from VCTK metadata."""
     ranked = table[table["eligible"] & table["f0_median_hz"].notna()]
     groups: Dict[str, object] = {"threshold_hz": float(threshold_hz)}
-    for name, members in (("low", ranked[ranked["f0_median_hz"] < threshold_hz]),
-                          ("high", ranked[ranked["f0_median_hz"] >= threshold_hz])):
+    for name, members in (("low", ranked[ranked["f0_median_hz"] < threshold_hz]), ("high", ranked[ranked["f0_median_hz"] >= threshold_hz])):
         members = members.sort_values("similarity", ascending=False)
+
         if members.empty:
             groups[name] = {"n": 0}
             continue
+
         groups[name] = {"n": int(len(members)), "mean_similarity": float(members["similarity"].mean()),
                         "closest": int(members.iloc[0]["speaker_index"]),
                         "closest_similarity": float(members.iloc[0]["similarity"]),
@@ -178,10 +183,10 @@ def split_half_reliability(paired: np.ndarray, eligible: Optional[Sequence[bool]
     from scipy.stats import spearmanr
 
     paired = np.asarray(paired, dtype=np.float64)
-    if eligible is not None:
-        paired = paired[np.asarray(eligible, bool)]
-    if paired.shape[1] < 2 or paired.shape[0] < 3:
-        return {"split_half_spearman": float("nan"), "spearman_brown": float("nan")}
+    if eligible is not None: paired = paired[np.asarray(eligible, bool)]
+
+    if paired.shape[1] < 2 or paired.shape[0] < 3: return {"split_half_spearman": float("nan"), "spearman_brown": float("nan")}
+
     r = float(spearmanr(paired[:, 0::2].mean(axis=1), paired[:, 1::2].mean(axis=1)).statistic)
     return {"split_half_spearman": r, "spearman_brown": 2 * r / (1 + r) if r > -1 else float("nan")}
 
@@ -189,8 +194,8 @@ def split_half_reliability(paired: np.ndarray, eligible: Optional[Sequence[bool]
 def pick_conditions(table: pd.DataFrame) -> Dict[str, int]:
     """Closest, median and furthest eligible speaker index from a rank_speakers table."""
     ranked = table[table["eligible"]].sort_values("rank")
-    if ranked.empty:
-        return {}
+    if ranked.empty: return {}
+
     indices = ranked["speaker_index"].tolist()
     return {"closest": int(indices[0]), "median": int(indices[(len(indices) - 1) // 2]),
             "furthest": int(indices[-1])}
@@ -208,8 +213,8 @@ def f0_median(audio: np.ndarray, sr: int, fmin: float = 50.0, fmax: float = 500.
     audio = np.asarray(audio, dtype=np.float32)
     frame = 2048 if sr > 24000 else 1024
     hop = frame // 4
-    if audio.size < frame:
-        return float("nan")
+    if audio.size < frame: return float("nan")
+    
     f0 = librosa.yin(audio, fmin=fmin, fmax=fmax, sr=sr, frame_length=frame, hop_length=hop)
     rms = librosa.feature.rms(y=audio, frame_length=frame, hop_length=hop)[0]
     n = min(f0.size, rms.size)

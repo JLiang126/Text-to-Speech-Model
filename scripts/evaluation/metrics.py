@@ -1,41 +1,13 @@
-"""Objective metrics for the TTS experiments, computed per utterance.
-
-| Metric         | What it measures                          | Better | Reference needed        | Model used |
-|----------------|-------------------------------------------|--------|-------------------------|------------|
-| ``mcd_dtw``    | spectral distance to the real recording   | lower  | the same sentence (test) | none |
-| ``wer``/``cer``| intelligibility (ASR transcript vs text)  | lower  | the text only           | Whisper |
-| ``secs``       | speaker similarity to the LJSpeech voice  | higher | real LJSpeech clips     | ECAPA-TDNN |
-| ``utmos``      | predicted naturalness on a 1-5 MOS scale  | higher | none                    | UTMOS22 strong |
-
-The three model-based metrics are loaded lazily. If one cannot be loaded (no
-internet, missing package), the caller records NaN for it and carries on, so one
-failed download never kills an evaluation run.
-
-Sources
--------
-- MCD: Kubichek (1993) 'Mel-cepstral distance measure for objective speech quality
-  assessment'. Here computed on mel-frequency cepstra (DCT of the log-mel
-  spectrogram, c0 dropped) and aligned with dynamic time warping.
-- Whisper: Radford et al. (2023) 'Robust speech recognition via large-scale weak
-  supervision', https://github.com/openai/whisper (MIT).
-- ECAPA-TDNN: Desplanques, Thienpondt & Demuynck (2020), via SpeechBrain
-  https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb (Apache-2.0).
-  Speaker-encoder cosine similarity (SECS) as used in YourTTS (Casanova et al. 2022).
-- UTMOS: Saeki et al. (2022) 'UTMOS: UTokyo-SaruLab system for VoiceMOS Challenge
-  2022', packaged by https://github.com/tarepan/SpeechMOS (MIT).
-"""
 from __future__ import annotations
 
 import re
 from typing import Callable, Dict, Iterable, Optional
-
 import numpy as np
 
 ASR_SR = 16_000      # Whisper, ECAPA and UTMOS all expect 16 kHz input
 MCD_K = 10.0 / np.log(10.0)  # converts natural-log cepstral distance to decibels
 
 
-# --------------------------------------------------------------------------- MCD
 def mel_cepstrum(audio: np.ndarray, sr: int, n_fft: int = 1024, hop_length: int = 256,
                  win_length: int = 1024, n_mels: int = 80, fmin: float = 0.0,
                  fmax: float = 8000.0, n_coeffs: int = 24) -> np.ndarray:

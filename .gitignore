@@ -236,3 +236,5 @@ outputs*/**/splits/
 # editor lock files (LibreOffice / MS Office)
 .~lock.*#
 ~$*
+
+checkpoints.zip

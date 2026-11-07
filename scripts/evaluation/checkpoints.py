@@ -45,18 +45,18 @@ def module_changes(state: Mapping[str, np.ndarray], base: Mapping[str, np.ndarra
     changes = {}
     for module in modules:
         keys = [k for k in base if k.split(".", 1)[0] == module]
-        if not keys:
-            continue
+        if not keys: continue
+
         diff = sum(float(np.sum((state[k] - base[k]) ** 2)) for k in keys)
         norm = sum(float(np.sum(base[k] ** 2)) for k in keys)
         changes[module] = (diff / norm) ** 0.5 if norm > 0 else float("nan")
+
     return changes
 
 
 def speaker_row_changes(state: Mapping[str, np.ndarray], base: Mapping[str, np.ndarray]) -> np.ndarray:
     """Relative change of every row of the speaker table (empty for single-speaker models)."""
-    if SPEAKER_KEY not in base:
-        return np.zeros(0)
+    if SPEAKER_KEY not in base: return np.zeros(0)
     delta = np.linalg.norm(state[SPEAKER_KEY] - base[SPEAKER_KEY], axis=1)
     return delta / np.maximum(np.linalg.norm(base[SPEAKER_KEY], axis=1), 1e-12)
 
@@ -77,11 +77,11 @@ def speaker_embedding_change(after: np.ndarray, before: np.ndarray, speaker_id: 
     - ``closest_other_cosine``: cosine of before_i to its most similar other pretrained voice.
     """
     after, before = np.asarray(after, dtype=np.float64), np.asarray(before, dtype=np.float64)
-    if after.shape != before.shape or after.ndim != 2:
-        raise ValueError(f"speaker tables differ in shape: {after.shape} vs {before.shape}")
+    if after.shape != before.shape or after.ndim != 2: raise ValueError(f"speaker tables differ in shape: {after.shape} vs {before.shape}")
+
     i = int(speaker_id)
-    if not 0 <= i < before.shape[0]:
-        raise ValueError(f"speaker_id {i} is outside the table (0..{before.shape[0] - 1})")
+    if not 0 <= i < before.shape[0]: raise ValueError(f"speaker_id {i} is outside the table (0..{before.shape[0] - 1})")
+
     norms = np.maximum(np.linalg.norm(before, axis=1), 1e-12)
     unit = before / norms[:, None]
     others = np.array([j for j in range(before.shape[0]) if j != i])
@@ -89,6 +89,7 @@ def speaker_embedding_change(after: np.ndarray, before: np.ndarray, speaker_id: 
     rel_rows = np.linalg.norm(after - before, axis=1) / norms
     after_unit = after[i] / max(float(np.linalg.norm(after[i])), 1e-12)
     gaps = np.linalg.norm(before[others] - before[i], axis=1)
+
     return {"speaker_id": i, "norm_before": float(norms[i]), "norm_after": float(np.linalg.norm(after[i])),
             "rel_l2": float(np.linalg.norm(delta) / norms[i]),
             "cosine": float(after_unit @ unit[i]),
@@ -104,17 +105,19 @@ def check_experiment(state: Mapping[str, np.ndarray], base: Mapping[str, np.ndar
     changes = module_changes(state, base)
     rows = speaker_row_changes(state, base)
     result: Dict[str, object] = {f"change_{m}": c for m, c in changes.items()}
+
     if rows.size >= 2:
         order = np.argsort(-rows)
         top, runner_up = int(order[0]), int(order[1])
-        result.update(trained_row=top, trained_row_change=float(rows[top]),
-                      next_row=runner_up, next_row_change=float(rows[runner_up]))
+        result.update(trained_row=top, trained_row_change=float(rows[top]), next_row=runner_up, next_row_change=float(rows[runner_up]))
         dominant = rows[top] >= ROW_DOMINANCE * max(rows[runner_up], 1e-12)
         result["speaker_ok"] = bool(speaker_id is not None and top == int(speaker_id) and dominant)
+
         if speaker_id is not None and 0 <= int(speaker_id) < rows.size:  # the configured row, before vs after
             move = speaker_embedding_change(state[SPEAKER_KEY], base[SPEAKER_KEY], int(speaker_id))
             result.update(speaker_rel_l2=move["rel_l2"], speaker_cosine=move["cosine"],
                           speaker_move_vs_gap=move["move_vs_gap"], speaker_nearest=move["nearest_pretrained"])
+            
     unchanged = [m for m, c in changes.items() if c < UNCHANGED_REL]
     result["unchanged_modules"] = ", ".join(unchanged) if unchanged else "none"
     expected = EXPECTED_UNCHANGED.get(str(freeze_mode).strip().lower())

@@ -38,35 +38,30 @@ def _expand_decimal_point(m: re.Match) -> str:
 def _expand_dollars(m: re.Match) -> str:
     match = m.group(1)
     parts = match.split(".")
-    if len(parts) > 2:
-        return match + " dollars"  # unexpected format
+    if len(parts) > 2: return match + " dollars"  # unexpected format
+
     dollars = int(parts[0]) if parts[0] else 0
     cents = int(parts[1]) if len(parts) > 1 and parts[1] else 0
     dollar_unit = "dollar" if dollars == 1 else "dollars"
     cent_unit = "cent" if cents == 1 else "cents"
-    if dollars and cents:
-        return f"{dollars} {dollar_unit}, {cents} {cent_unit}"
-    if dollars:
-        return f"{dollars} {dollar_unit}"
-    if cents:
-        return f"{cents} {cent_unit}"
+
+    if dollars and cents: return f"{dollars} {dollar_unit}, {cents} {cent_unit}"
+    if dollars: return f"{dollars} {dollar_unit}"
+    if cents: return f"{cents} {cent_unit}"
     return "zero dollars"
 
 
-def _expand_ordinal(m: re.Match) -> str:
-    return _inflect.number_to_words(m.group(0))
+def _expand_ordinal(m: re.Match) -> str: return _inflect.number_to_words(m.group(0))
 
 
 def _expand_number(m: re.Match) -> str:
     num = int(m.group(0))
     if 1000 < num < 3000:  # read like a year: 1865 -> "eighteen sixty-five"
-        if num == 2000:
-            return "two thousand"
-        if 2000 < num < 2010:
-            return "two thousand " + _inflect.number_to_words(num % 100)
-        if num % 100 == 0:
-            return _inflect.number_to_words(num // 100) + " hundred"
+        if num == 2000: return "two thousand"
+        if 2000 < num < 2010: return "two thousand " + _inflect.number_to_words(num % 100)
+        if num % 100 == 0: return _inflect.number_to_words(num // 100) + " hundred"
         return _inflect.number_to_words(num, andword="", zero="oh", group=2).replace(", ", " ")
+    
     return _inflect.number_to_words(num, andword="")
 
 

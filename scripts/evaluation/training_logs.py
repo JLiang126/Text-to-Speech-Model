@@ -32,8 +32,7 @@ LOSS_LABELS = {"mel": "Validation mel L1", "kl": "Validation KL", "duration": "V
 
 def config_output_dir(config: Optional[PathLike]) -> Optional[Path]:
     """``output_dir`` from a training YAML, or None."""
-    if not config or not Path(config).is_file():
-        return None
+    if not config or not Path(config).is_file(): return None
     import yaml
     value = (yaml.safe_load(Path(config).read_text(encoding="utf-8")) or {}).get("output_dir")
     return Path(value) if value else None
@@ -56,21 +55,20 @@ def find_run_folder(experiment: str, config: Optional[PathLike] = None,
     candidates: List[Path] = []
     if runs_dir is not None:
         candidates.append(Path(runs_dir) / experiment)
-        if output_dir is not None:
-            candidates.append(Path(runs_dir) / output_dir.name)
-    if output_dir is not None:
-        candidates.append(output_dir)
+        if output_dir is not None: candidates.append(Path(runs_dir) / output_dir.name)
+
+    if output_dir is not None: candidates.append(output_dir)
+
     for folder in candidates:
-        if _history_dir(folder) is not None:
-            return folder
+        if _history_dir(folder) is not None: return folder
+
     return None
 
 
 def load_history(folder: PathLike) -> Tuple[Optional[pd.DataFrame], pd.DataFrame]:
     """(training, validation) loss histories of a run folder."""
     sub = _history_dir(Path(folder))
-    if sub is None:
-        raise FileNotFoundError(f"No {VALIDATION_HISTORY_CSV} in {folder} or {Path(folder) / 'run'}")
+    if sub is None: raise FileNotFoundError(f"No {VALIDATION_HISTORY_CSV} in {folder} or {Path(folder) / 'run'}")
     train_path = sub / TRAINING_HISTORY_CSV
     train = pd.read_csv(train_path) if train_path.is_file() else None
     return train, pd.read_csv(sub / VALIDATION_HISTORY_CSV)
@@ -110,21 +108,23 @@ def loss_table(histories: Mapping[str, Tuple[Optional[pd.DataFrame], pd.DataFram
     rows = []
     for name, (train, val) in histories.items():
         val = val.dropna(subset=[l for l in losses if l in val.columns], how="all").reset_index(drop=True)
-        if val.empty:
-            continue
+        if val.empty: continue
+
         row: Dict[str, object] = {"experiment": name, "epochs": int(val["epoch"].iloc[-1])}
         for loss in losses:
-            if loss not in val.columns:
-                continue
+            if loss not in val.columns: continue
+
             series = val[loss].to_numpy(dtype=float)
             row[f"{loss}_final"] = float(series[-1])
             row[f"{loss}_min"] = float(np.nanmin(series))
             row[f"{loss}_best_epoch"] = int(val["epoch"].iloc[int(np.nanargmin(series))])
             row[f"{loss}_slope_last{tail}"] = _slope(series[-tail:])
+
         if train is not None and "mel" in train.columns and "mel" in val.columns:
             row["mel_train_final"] = float(train["mel"].dropna().iloc[-1])
             row["mel_gap_final"] = row["mel_final"] - row["mel_train_final"]
         rows.append(row)
+
     return pd.DataFrame(rows)
 
 
@@ -147,6 +147,7 @@ def plot_loss_curves(histories: Mapping[str, Tuple[Optional[pd.DataFrame], pd.Da
         ax.set_title(LOSS_LABELS.get(loss, loss), fontsize=10, loc="left")
         ax.set_xlabel("epoch")
         ax.grid(True, alpha=0.3)
+
     # legend below the panels, so it never covers a curve
     handles, labels = axes[0][0].get_legend_handles_labels()
     ncol = min(len(labels), 5)
@@ -156,11 +157,13 @@ def plot_loss_curves(histories: Mapping[str, Tuple[Optional[pd.DataFrame], pd.Da
     if title:
         fig.suptitle(title + (" (solid = validation, dashed = training)" if show_training else ""),
                      x=0.01, ha="left", fontsize=10)
+        
     fig.tight_layout(rect=(0, 0.06 * legend_rows + 0.02, 1, 0.97))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=200)
     plt.close(fig)
+
     return path
 
 
@@ -171,10 +174,9 @@ def settings_mismatches(settings: Mapping[str, object], expected: Mapping[str, o
     for key in keys:
         if key in settings and key in expected and str(expected[key]).strip() != "":
             a, b = settings[key], expected[key]
-            try:
-                same = np.isclose(float(a), float(b))
-            except (TypeError, ValueError):
-                same = str(a).strip().lower() == str(b).strip().lower()
-            if not same:
-                out[key] = (a, b)
+
+            try: same = np.isclose(float(a), float(b))
+            except (TypeError, ValueError): same = str(a).strip().lower() == str(b).strip().lower()
+            if not same: out[key] = (a, b)
+            
     return out

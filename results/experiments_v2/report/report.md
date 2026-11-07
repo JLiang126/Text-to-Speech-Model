@@ -1,6 +1,6 @@
 # Fine-tuning experiments: evaluation report
 
-Generated 2026-11-05 14:12. Test sentences per system: 150 (`dataset\splits\test_manifest.csv`, test-set fingerprint e705482d0bf0). Base model: `ylacombe/vits-vctk-with-discriminator`.
+Generated 2026-11-07 10:36. Test sentences per system: 150 (`dataset/splits/test_manifest.csv`, test-set fingerprint e705482d0bf0). Base model: `ylacombe/vits-vctk-with-discriminator`.
 
 Every number is a mean with a 95% bootstrap CI over the test sentences; WER and CER are corpus rates. The ceiling is the real recordings (`ground_truth`); a floor is the pretrained model with a run's speaker index (`pretrained_spk<k>`). Paired tests compare B with A on the same sentences (B minus A, Wilcoxon with Holm correction across metrics, effect size d_z). Unfinished systems are left out: none.
 
@@ -345,7 +345,3 @@ The base case against the same run with the text encoder frozen, and with the or
 
 
 ![Loss curves](ruling_out_losses.png)
-
-## Listening
-
-The 12 fixed prompts per system are in `<results>/<system>/prompts/` (pretrained_spk7, pretrained_spk24, best_speaker_embedding, worst_speaker_embedding, unfreeze_speech_embeddings_only, unfreeze_speech_embeddings_only_WSE, best_speaker_embedding_10xLR, worst_speaker_embedding_10xLR, unfreeze_speech_embeddings_only_10xLR, unfreeze_speech_embeddings_only_WSE_10xLR, freeze_text_encoder, freeze_text_encoder_10xLR, original_vits_config).

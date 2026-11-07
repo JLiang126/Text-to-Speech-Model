@@ -90,7 +90,7 @@ class DataConfig:
     do_eval: bool = True
     eval_steps: int = 50
     per_device_eval_batch_size: int = 16
-    max_eval_samples: int = 25
+    max_eval_samples: Optional[int] = None
     use_linear_lr_schedule: bool = True
 
     # loss weights for different components of the model

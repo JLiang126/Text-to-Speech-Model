@@ -1,6 +1,6 @@
 # Fine-tuning experiments: evaluation report
 
-Generated 2026-11-05 14:11. Test sentences per system: 150 (`dataset\splits\test_manifest.csv`, test-set fingerprint e705482d0bf0). Base model: `ylacombe/vits-vctk-with-discriminator`.
+Generated 2026-11-07 10:36. Test sentences per system: 150 (`dataset/splits/test_manifest.csv`, test-set fingerprint e705482d0bf0). Base model: `ylacombe/vits-vctk-with-discriminator`.
 
 Every number is a mean with a 95% bootstrap CI over the test sentences; WER and CER are corpus rates. The ceiling is the real recordings (`ground_truth`); a floor is the pretrained model with a run's speaker index (`pretrained_spk<k>`). Paired tests compare B with A on the same sentences (B minus A, Wilcoxon with Holm correction across metrics, effect size d_z). Unfinished systems are left out: none.
 
@@ -335,18 +335,12 @@ Timing (CPU): Intel64 Family 6 Model 126 Stepping 5, GenuineIntel
 | no_droplayer | freeze_text_encoder | Pitch error (Hz) | +0.6 [-0.7, +2.0] | 1.000 | 0.07 | no clear difference |
 
 
-**Training logs.** Validation losses are reconstruction losses on the validation split with the model in training mode (posterior encoder, alignment from the real recording), so they complement the test metrics above rather than replace them; only mel, KL and duration are comparable between runs. A negative slope over the last epochs means the run was still improving when it stopped; under a linear schedule the learning rate is near zero by then, so a flat end is not evidence of convergence.
+**Training logs.** Validation losses are reconstruction losses on the validation split with the model in training mode (posterior encoder, alignment from the real recording), so they complement the test metrics above rather than replace them; only mel, KL and duration are comparable between runs. A negative slope over the last epochs means the run was still improving when it stopped; under a linear schedule the learning rate is near zero by then, so a flat end is not evidence of convergence. No logs found for: original, freeze_text_encoder.
 
 | run | epochs | val mel, final | val mel, min | epoch of min | val mel slope, last 3 epochs | val KL, final | val duration, final | val minus train mel |
 |---|---|---|---|---|---|---|---|---|
 | no_droplayer | 15 | 0.454 | 0.454 | 15 | -0.0019 | 1.788 | 1.572 | -0.002 |
-| original | 15 | 0.457 | 0.457 | 15 | -0.0022 | 1.893 | 1.623 | -0.003 |
 | double_fmaps_weighting | 15 | 0.457 | 0.457 | 15 | -0.0025 | 1.829 | 1.572 | -0.003 |
-| freeze_text_encoder | 15 | 0.451 | 0.451 | 15 | -0.0020 | 2.176 | 1.554 | -0.003 |
 
 
 ![Loss curves](regularisation_and_freezing_losses.png)
-
-## Listening
-
-The 12 fixed prompts per system are in `<results>/<system>/prompts/` (pretrained_spk0, pretrained_spk2, pretrained_spk7, pretrained_spk24, no_droplayer, original, best_speaker_embedding, worst_speaker_embedding, male_speaker, unfreeze_speech_embeddings_only, halve_learning_rate, double_learninge_rate, no_scheduler, double_fmaps_weighting, freeze_text_encoder).
