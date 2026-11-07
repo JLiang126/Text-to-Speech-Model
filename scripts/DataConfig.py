@@ -41,7 +41,7 @@ class DataConfig:
     data_root: Path = Path(os.environ.get("LJSPEECH_ROOT", "./dataset/"))
     output_split_dir: Optional[Path] = None
     seed: int = 42
-    split_ratios: Tuple[float, float, float] = (0.90, 0.05, 0.05)
+    split_ratios: Tuple[float, float, float] = (0.80, 0.10, 0.10)
     subset_size: int = None # Set to None for full dataset
     num_workers: int = 0
     persistent_workers: bool = False

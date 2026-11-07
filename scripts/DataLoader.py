@@ -14,8 +14,13 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from transformers import PreTrainedTokenizerBase
 
 from scripts.DataConfig import DataConfig
-from scripts.TextProcessor import clean_normalised_text
+from scripts.TextProcessor import clean_normalised_text, configure_espeak
 from scripts.AudioProcessor import AudioProcessor
+
+
+def _configure_espeak_worker(_: int) -> None:
+    configure_espeak()
+
 
 def set_global_seed(seed: int = 42) -> None:
     """Fixes random seeds across Python, NumPy, and PyTorch."""
@@ -360,6 +365,7 @@ def build_dataloaders(
             # Persistent workers are valid only when worker subprocesses actually exist.
             persistent_workers=cfg.persistent_workers and num_workers > 0,
             collate_fn=collate_fn,
+            worker_init_fn=_configure_espeak_worker,
             # Pinned CPU memory supports faster transfers when training uses CUDA.
             pin_memory=torch.cuda.is_available(),
         )

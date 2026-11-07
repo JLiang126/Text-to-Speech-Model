@@ -16,6 +16,15 @@ import unicodedata
 from transformers import AddedToken, VitsTokenizer
 
 
+def configure_espeak() -> None:
+    """Configure phonemizer to use the espeak-ng library bundled with its dependency."""
+    import espeakng_loader
+    from phonemizer.backend.espeak.wrapper import EspeakWrapper
+
+    EspeakWrapper.set_library(espeakng_loader.get_library_path())
+    EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
+
+
 
 class WordMismatchFilter(logging.Filter):
     """
@@ -132,6 +141,8 @@ def load_vctk_tokenizer(checkpoint: str) -> VitsTokenizer:
     Note that this issue was identified by debugging with AI (Github Copilot Sol 6.1) during
     development, however the code is original.
     """
+
+    configure_espeak()
 
     # load the tokenizer from the pretrained checkpoint with the corrected unknown token mapping
     tokenizer = VitsTokenizer.from_pretrained(checkpoint, unk_token="<unk>",

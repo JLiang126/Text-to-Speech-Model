@@ -238,3 +238,7 @@ outputs*/**/splits/
 ~$*
 
 checkpoints.zip
+
+# For reference in one directory
+Submission_Template_A3-1.ipynb
+Assignment 3-2.pdf
