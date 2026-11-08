@@ -9,8 +9,7 @@ import logging
 import math
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -88,6 +87,145 @@ def plot_alignment_to_numpy(alignment, info=None):
     plt.close()
     return data
 
+
+def get_alignment_example(model, val_loader):
+    """
+    Get an example of the frame-token log-likelihood scores and the selected MAS alignment 
+    from the model.
+
+    Note: this script is mostly AI-generated. I have reviewed each line of the code for
+    understanding, and added comments.
+    - Michael Crisp
+
+    Returns:
+        scores (torch.Tensor): The frame-token log-likelihood scores.
+        alignment (torch.Tensor): The selected MAS alignment.
+        utt_id (str): The utterance ID of the example.
+    """
+
+    from scripts.monotonic_alignment import MonotonicAlignment
+    import torch
+
+    # load a batch and move it to the same device as the model
+    batch = next(iter(val_loader))
+    device = next(model.parameters()).device
+    inputs = {
+        key: value[:1].to(device) if isinstance(value, torch.Tensor) else value
+        for key, value in batch["model_inputs"].items()
+    }
+
+    # initialize the monotonic alignment module and a dictionary to capture scores
+    mas = MonotonicAlignment()
+    captured = {}
+    # wrapper function to capture the alignment scores during the forward pass
+    def capture_alignment(scores, mask):
+        # capture the alignment scores for later use
+        captured["scores"] = scores.detach().cpu().clone()
+        return mas.maximum_path(scores, mask)
+
+    # do a forward pass through the model, with the MAS wrapper function
+    # to obtain the alignment scores
+    model.eval()
+    with torch.inference_mode():
+        outputs = model(
+            **inputs,
+            monotonic_alignment_function=capture_alignment,
+            return_dict=True,
+        )
+
+    # get the number of frames and tokens
+    frames = int(inputs["labels_attention_mask"][0].sum())
+    tokens = int(inputs["attention_mask"][0].sum())
+    # get scores and the corresponding alignment for the valid frames and tokens
+    scores = captured["scores"][0, :frames, :tokens]
+    alignment = outputs.attn[0, 0, :frames, :tokens].cpu()
+    
+    # return the captured scores, the alignment, and the utterance ID
+    return scores, alignment, batch["utt_ids"][0]
+
+
+def get_monotonic_spline(model, tokeniser, test_text, tail_extend=1.0):
+    """
+    Get an example monotonic spline for the stochastic duration predictor in the model.
+
+    Note: this script is mostly AI-generated. I have reviewed each line of the code for
+    understanding. 
+    I added comments and extended the x axis past the tail of the spline to better 
+    visualize its behavior.
+    - Michael Crisp
+
+    Returns:
+        x (torch.Tensor): The input values for the spline.
+        y (torch.Tensor): The output values of the spline for each channel.
+        token_label (str): The label of the token used for conditioning (hopefully not blank)
+        channels (int): The number of channels in the spline output.
+        tail_bound (float): The tail bound of the spline used for extending the x axis.
+    """
+
+    # the spline function
+    from scripts.model import _unconstrained_rational_quadratic_spline
+    import torch
+
+    # don't bother with gradients for this analysis
+    model.eval()
+    # get the device of the model parameters
+    device = next(model.parameters()).device
+    # tokenize the input text and move to the same device as the model
+    inputs = tokeniser(test_text, return_tensors="pt")
+    inputs = {key: value.to(device) for key, value in inputs.items()}
+
+    # flows[0] is the affine flow; flows[1] is the first spline flow.
+    flow = model.duration_predictor.flows[-1]
+
+    # set up a hook to capture the raw output
+    captured = {}
+    def capture_parameters(module, module_inputs, output):
+        captured["raw"] = output.detach()
+    hook = flow.conv_proj.register_forward_hook(capture_parameters)
+
+    try:
+        torch.manual_seed(0)  # Make the sampled inference context repeatable.
+        # do a forward pass to capture the raw output
+        with torch.inference_mode():
+            model(**inputs)
+    finally:
+        hook.remove()
+
+    # extract the raw output and the token information for plotting
+    raw = captured["raw"]
+    channels = flow.half_channels
+    token_index = min(1, raw.shape[-1] - 1)  # Usually the first phoneme, after the leading blank.
+    token_id = inputs["input_ids"][0, token_index].item()
+    token_label = tokeniser.decode([token_id])
+
+    # Match the reshape and parameter splitting used inside VitsConvFlow.forward.
+    params = raw.reshape(1, channels, -1, raw.shape[-1]).permute(0, 1, 3, 2)
+    # get the number of bins for the spline
+    k = flow.num_bins
+    # get the widths, heights, and derivatives for the spline
+    widths = params[..., :k] / math.sqrt(flow.filter_channels)
+    heights = params[..., k:2 * k] / math.sqrt(flow.filter_channels)
+    derivatives = params[..., 2 * k:]
+
+    # define the input range for the spline
+    x = torch.linspace(-flow.tail_bound - tail_extend, flow.tail_bound + tail_extend, 400, device=device)
+    x_for_channels = x.view(1, 1, -1).expand(1, channels, -1)
+
+    # duplicate the parameters so that the spline can be evaluated for each x value
+    def repeat_token(values):
+        return values[0, :, token_index, :].unsqueeze(1).expand(-1, x.numel(), -1).unsqueeze(0)
+
+    # get the spline y values
+    y, _ = _unconstrained_rational_quadratic_spline(
+        x_for_channels,
+        repeat_token(widths),
+        repeat_token(heights),
+        repeat_token(derivatives),
+        tail_bound=flow.tail_bound,
+    )
+
+    # return the spline x values, y values, token label, and number of channels
+    return x.cpu(), y.cpu(), token_label, channels, flow.tail_bound
 
 
 def normalize_history_frame(history):

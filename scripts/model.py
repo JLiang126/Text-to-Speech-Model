@@ -3179,21 +3179,26 @@ class VitsModelForPreTraining(VitsPreTrainedModel):
         torch.Size([1, 45824])
         ```
         """
+
+        # Set default values for output_attentions, output_hidden_states, and return_dict if not provided
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        # Set the monotonic alignment function to the default if not provided
         monotonic_alignment_function = (
             monotonic_align_max_path if monotonic_alignment_function is None else monotonic_alignment_function
         )
 
+        # set the input padding mask based on the attention mask
         if attention_mask is not None:
             input_padding_mask = attention_mask.unsqueeze(-1).float()
         else:
             input_padding_mask = torch.ones_like(input_ids).unsqueeze(-1).float()
 
+        # set the speaker embeddings if multiple speakers are used
         if self.config.num_speakers > 1 and speaker_id is not None:
             if isinstance(speaker_id, int):
                 speaker_id = torch.full(size=(1,), fill_value=speaker_id, device=self.device)
@@ -3223,12 +3228,17 @@ class VitsModelForPreTraining(VitsPreTrainedModel):
                 input_padding_mask,
             )
 
+
+        ## ------ remaining code is the training forward of VitsModel ------
+
+        # set the labels padding mask based on the labels attention mask
         if labels_attention_mask is not None:
             labels_padding_mask = labels_attention_mask.unsqueeze(1).float()
         else:
             labels_attention_mask = torch.ones((labels.shape[0], labels.shape[2])).float().to(self.device)
             labels_padding_mask = labels_attention_mask.unsqueeze(1)
 
+        # Encode the input text to obtain hidden states and prior statistics.
         text_encoder_output = self.text_encoder(
             input_ids=input_ids,
             padding_mask=input_padding_mask,
@@ -3243,11 +3253,14 @@ class VitsModelForPreTraining(VitsPreTrainedModel):
         prior_means = text_encoder_output[1] if not return_dict else text_encoder_output.prior_means
         prior_log_variances = text_encoder_output[2] if not return_dict else text_encoder_output.prior_log_variances
 
+        # Encode the input labels using the posterior encoder to obtain latents and posterior statistics.
         latents, posterior_means, posterior_log_variances = self.posterior_encoder(
             labels, labels_padding_mask, speaker_embeddings
         )
+        # Transform the posterior latents using the flow to obtain the prior latents.
         prior_latents = self.flow(latents, labels_padding_mask, speaker_embeddings, reverse=False)
 
+        # build the negative cross-entropy for the prior latents (alignment matrix)
         prior_means, prior_log_variances = prior_means.transpose(1, 2), prior_log_variances.transpose(1, 2)
         with torch.no_grad():
             # negative cross-entropy
@@ -3282,13 +3295,17 @@ class VitsModelForPreTraining(VitsPreTrainedModel):
             log_duration = self.duration_predictor(hidden_states, input_padding_mask, speaker_embeddings)
             log_duration = torch.sum((log_duration - log_duration_padded) ** 2, [1, 2]) / torch.sum(input_padding_mask)
 
-        # expand priors
+        # expand transformed prior means and log variances according to the attention matrix.
         prior_means = torch.matmul(attn.squeeze(1), prior_means.transpose(1, 2)).transpose(1, 2)
         prior_log_variances = torch.matmul(attn.squeeze(1), prior_log_variances.transpose(1, 2)).transpose(1, 2)
 
+        # Slice the latents and corresponding IDs based on the label lengths and segment size.
+        # This ensures that the decoder only processes segments of the latents that correspond to the actual label lengths.
         label_lengths = labels_attention_mask.sum(dim=1)
         latents_slice, ids_slice = rand_slice_segments(latents, label_lengths, segment_size=self.segment_size)
 
+    
+        # produce the actual waveform for the sliced segment using the decoder.
         waveform = self.decoder(latents_slice, speaker_embeddings)
 
         if not return_dict:

@@ -67,7 +67,7 @@ class DataConfig:
     f_max: float = 8000.0  
 
     # checkpoint for the model
-    model_name_or_path: str = "ylacombe/vits-ljs-with-discriminator"
+    model_name_or_path: str = "ylacombe/vits-vctk-with-discriminator"
     speaker_id: int = 0
 
     # training configuration
