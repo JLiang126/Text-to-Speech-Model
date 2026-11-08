@@ -198,16 +198,3 @@ def test_speaker_embedding_change_reads_a_known_move():
         speaker_embedding_change(after, before, 6)
     with pytest.raises(ValueError, match="shape"):
         speaker_embedding_change(after[:5], before, 1)
-
-
-def test_claimed_settings_come_from_the_table_and_override_the_yaml(tmp_path):
-    from scripts.evaluate_experiments import claimed_settings
-
-    config = tmp_path / "run.yaml"
-    config.write_text("learning_rate: 0.00002\nspeaker_embedding_lr_ratio: 50.0\nnum_train_epochs: 15\n")
-    row = pd.Series({"experiment": "x", "speaker_id": "7", "learning_rate": "4e-5", "use_linear_lr_scheduler": "true",
-                     "speaker_embedding_lr_ratio": "", "description": "ignored", "config": str(config)})
-    claimed = claimed_settings(row)
-    assert claimed["learning_rate"] == "4e-5" and claimed["speaker_id"] == "7"  # the table wins
-    assert claimed["use_linear_lr_schedule"] is not None and claimed["speaker_embedding_lr_ratio"] == 50.0  # blank: YAML
-    assert claimed["num_train_epochs"] == 15 and "description" not in claimed

@@ -185,11 +185,11 @@ def evaluation_overlap(evaluated_ids: Iterable[str], splits: Mapping[str, pd.Dat
 # ------------------------------------------------------------------ command line
 def main(argv: Optional[Sequence[str]] = None) -> Dict[str, object]:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--config", default="configs/no_droplayer.yaml", help="training config whose split to check")
+    p.add_argument("--config", default="configs/best_speaker_embedding.yaml", help="training config whose split to check")
     p.add_argument("--split_dir", default="dataset/splits", help="where to write the rebuilt split")
     p.add_argument("--batches", type=int, default=1, help="whole batches to check per split (0 = skip)")
     p.add_argument("--batch_size", type=int, default=16)
-    p.add_argument("--check_results", default=None, help="an evaluate_experiments results folder: count its sentences in each split")
+    p.add_argument("--check_results", default=None, help="a results folder (e.g. results): count its sentences in each split")
     args = p.parse_args(argv)
 
     from scripts.DataConfig import DataConfig, load_config

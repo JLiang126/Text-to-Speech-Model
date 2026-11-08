@@ -26,7 +26,7 @@ MODULES = ("text_encoder", "duration_predictor", "flow", "posterior_encoder", "d
 UNCHANGED_REL = 1e-4      # relative change below this counts as unchanged
 ROW_DOMINANCE = 5.0       # the trained row must move at least this many times more than any other row
 
-# freeze_mode in experiments.csv -> modules that must stay unchanged
+# freeze_mode in experiment_variables.csv -> modules that must stay unchanged
 EXPECTED_UNCHANGED = {
     "none": (),
     "freeze_text_encoder": ("text_encoder",),

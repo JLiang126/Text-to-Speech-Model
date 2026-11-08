@@ -327,42 +327,90 @@ def test_at_least_ten_distinct_prompts():
     assert len(texts) >= 10 and len(set(texts)) == len(texts)
 
 
-# ------------------------------------------------------------- compare.py
-def _fake_result(folder, name, utt_values, rtf=0.05, ground_truth=False, step=None):
+# ------------------------------------------------------------- notebook run table (results.py)
+def _fake_system(folder, mcd, utmos, overlap=0):
+    """A results folder as evaluate.py writes it, with the columns the notebook tables read."""
+    n = len(mcd)
     folder.mkdir(parents=True)
-    per_utt = pd.DataFrame({"utt_id": [f"u{i}" for i in range(len(utt_values))], "mcd_dtw": utt_values,
-                            "dur_ratio": 1.0 + 0.01 * np.arange(len(utt_values))})
+    per_utt = pd.DataFrame({"utt_id": [f"u{i}" for i in range(n)], "mcd_dtw": mcd, "wer": 0.05, "cer": 0.02,
+                            "secs": 0.8, "secs_paired": 0.7, "utmos": utmos, "dur_ratio": 1.0, "f0_hz": 200.0,
+                            "f0_ref_hz": 207.0})
     per_utt.to_csv(folder / "per_utterance.csv", index=False)
-    summary = {"experiment": name, "ground_truth": ground_truth, "step": step, "n_utterances": len(utt_values),
-               "metrics": {"mcd_dtw": dict(zip(["mean", "ci_low", "ci_high"], stats.bootstrap_ci(utt_values)),
-                                           n=len(utt_values))}, "corpus": {}}
+    means = {key: {"mean": float(np.mean(per_utt[key]))} for key in ("mcd_dtw", "secs", "utmos", "f0_hz", "dur_ratio")}
+    summary = {"metrics": means, "corpus": {"wer": {"value": 0.05}},
+               "test_set": {"n": n, "fingerprint": "abc", "overlap": {"train_manifest.csv": overlap}}}
     (folder / "summary.json").write_text(json.dumps(summary))
-    if not ground_truth:
-        runs = pd.DataFrame({"text_id": [0, 0, 1, 1], "repeat": [0, 1, 0, 1], "latency_s": [0.1] * 4,
-                             "audio_s": [0.1 / rtf] * 4, "rtf": [rtf] * 4})
-        runs.to_csv(folder / "rtf_runs_cpu.csv", index=False)
-        lat = {**timing.summarise_latency(runs), "device": {"cpu": "Test CPU"}, "experiment": name, "step": step}
-        (folder / "latency_cpu.json").write_text(json.dumps(lat))
 
 
-def test_compare_builds_table_tests_and_figures(tmp_path):
-    from scripts import compare
+def test_run_table_tables_and_paired_verdicts(tmp_path):
+    from scripts.evaluation import results
 
     rng = np.random.default_rng(0)
-    base = rng.normal(6.0, 0.5, 40)
-    _fake_result(tmp_path / "pretrained", "pretrained", base + 2.0)
-    _fake_result(tmp_path / "expA_1000", "expA", base + 0.5, step=1000)
-    _fake_result(tmp_path / "expA_2000", "expA", base, step=2000)
-    _fake_result(tmp_path / "expB_2000", "expB", base + 0.6 + rng.normal(0, 0.05, 40), step=2000)
-    out = tmp_path / "comparison"
-    result = compare.main([str(tmp_path / d) for d in ("pretrained", "expA_1000", "expA_2000", "expB_2000")]
-                          + ["--pair", "expA@2000", "expB", "--out", str(out)])
-    for name in ("comparison_table.csv", "comparison_table.md", "paired_tests.csv", "comparison.png"):
-        assert (out / name).is_file(), name
-    assert "RTF CPU" in result["table"].columns
-    mcd = result["tests"].query("metric == 'mcd_dtw'").iloc[0]
-    assert mcd["verdict"] == "expA@2000 better"  # expB has higher (worse) MCD on every sentence
-    assert {"wilcoxon_p_holm", "cohens_dz", "better_if"} <= set(result["tests"].columns)
+    mcd, utmos = rng.normal(4.0, 0.3, 40), rng.normal(3.5, 0.2, 40)
+    _fake_system(tmp_path / "a", mcd, utmos)
+    _fake_system(tmp_path / "b", mcd - 0.2, utmos + rng.normal(0, 0.01, 40))  # lower MCD on every sentence
+    _fake_system(tmp_path / "c", mcd, utmos, overlap=3)
+    runs = pd.DataFrame({"results": [str(tmp_path / x) for x in "abc"], "label": ["A", "B", "C"],
+                         "name": list("abc")}, index=list("ABC"))
+    table = results.metric_table(runs, ["A", "B"], ["mcd", "wer", "utmos"]).data
+    assert table["MCD (dB) ↓"].tolist() == pytest.approx([mcd.mean(), mcd.mean() - 0.2])
+    assert table["WER (%) ↓"].tolist() == pytest.approx([5.0, 5.0])
+    tests = results.paired_tests(runs, "A", "B")
+    assert tests.loc["mcd", "verdict"] == 1 and tests.loc["utmos", "verdict"] == 0
+    assert tests.loc["mcd", "p_holm"] >= tests.loc["mcd", "wilcoxon_p"]
+    paired = results.paired_table(runs, [("A", "B", "lower MCD")], ["mcd", "utmos"]).data
+    assert paired["MCD (dB)"].iloc[0] == "-0.20" and paired["What changes"].iloc[0] == "lower MCD"
+    assert "same 40 test sentences" in results.check_held_out(runs, ["A", "B"])
+    with pytest.raises(AssertionError):
+        results.check_held_out(runs, ["A", "C"])  # C was scored on sentences it trained on
+
+
+def test_figures_take_the_runs_metrics_and_labels_they_are_given(tmp_path):
+    from scripts.evaluation import results
+
+    rng = np.random.default_rng(0)
+    for name, shift in (("gt", 0.0), ("pre", 1.0), ("run", 0.3)):
+        _fake_system(tmp_path / name, rng.normal(4.0 + shift, 0.3, 20), rng.normal(3.5, 0.2, 20))
+    runs = pd.DataFrame({"results": [str(tmp_path / x) for x in ("gt", "pre", "run")],
+                         "label": ["Real", "Pretrained", "Base case – full fine-tune"],
+                         "start": [None, None, "P"], "group": [None, None, "full"]}, index=["GT", "P", "2"])
+    fig = results.plot_before_after(runs, ["2"], ["mcd", "utmos"], labels={"2": "Base case"})
+    assert len(fig.axes) == 2
+    assert [t.get_text() for t in fig.axes[0].get_yticklabels()] == ["Full fine-tuning", "2   Base case"]
+
+
+def test_plot_losses_marks_a_training_loss_above_the_axis(tmp_path, monkeypatch):
+    from scripts.evaluation import results
+
+    monkeypatch.setattr(results, "EPOCH0", tmp_path / "none.csv")
+    for split, kl in (("training", [2e5, 2.2, 2.0]), ("validation", [2.5, 2.1, 2.0])):
+        pd.DataFrame({"epoch": [1, 2, 3], "mel": [0.5, 0.48, 0.47], "kl": kl, "duration": [1.7, 1.6, 1.6]}) \
+            .to_csv(tmp_path / f"{split}_loss_history.csv", index=False)
+    runs = pd.DataFrame({"logs": [str(tmp_path)], "speaker": [24], "group": ["full"], "label": ["Base case"]},
+                        index=["2"])
+    ax = results.plot_losses(runs, ["2"], ["kl"]).axes[0]
+    assert ax.get_ylim()[1] < 10
+    assert "run 2 training: 200,000" in [t.get_text() for t in ax.texts]
+
+
+def test_run_table_reads_the_experiment_csv(tmp_path):
+    from scripts.evaluation import results
+
+    csv = tmp_path / "experiment_variables.csv"
+    csv.write_text("file_name,speaker_id,freeze_mode,experiment_label,short_description\n"
+                   "worst_speaker_embedding,24,none,2,Base case – full fine-tune\n"
+                   "unfreeze_speech_embeddings_only_WSE_10xLR,24,unfreeze_speech_embeddings_only,4b,"
+                   "Fine-tune speaker embedding only. 10X learning rate.\n", encoding="utf-8")
+    references = pd.DataFrame([("GT", "ground_truth", "Real LJ recordings", None),
+                               ("P24", "pretrained_spk24", "Pretrained, speaker 24", 24)],
+                              columns=["id", "name", "label", "speaker"])
+    runs = results.run_table(csv, references)
+    assert runs.index.tolist() == ["GT", "P24", "2", "4b"]
+    assert runs.loc["4b", "label"] == "Fine-tune speaker embedding only, 10× learning rate"
+    assert runs.loc["4b", "group"] == "embedding only" and runs.loc["2", "group"] == "full"
+    assert runs.loc["2", "start"] == "P24" and runs.loc["2", "logs"] == "outputs/worst_speaker_embedding/run"
+    assert runs.loc["P24", "checkpoint"] == results.BASE_MODEL and pd.isna(runs.loc["GT", "checkpoint"])
+    assert runs.loc["2", "results"] == "results/worst_speaker_embedding"
 
 
 # ------------------------------------------- Hugging Face format (finetune-hf-vits)
@@ -374,13 +422,13 @@ def _tiny_hf_model(folder, num_speakers=4):
     """A small random transformers VitsModel + VitsTokenizer saved like a finetune-hf-vits run folder."""
     import torch
     from transformers import VitsConfig, VitsModel, VitsTokenizer
-    from scripts.TextProcessor import VITS_SYMBOLS
+    from test_text_frontend import VCTK_SYMBOLS  # the checkpoint's symbol order
 
     folder.mkdir(parents=True, exist_ok=True)
     vocab = folder / "vocab.json"
-    vocab.write_text(json.dumps({s: i for i, s in enumerate(VITS_SYMBOLS)}, ensure_ascii=False), encoding="utf-8")
+    vocab.write_text(json.dumps({s: i for i, s in enumerate(VCTK_SYMBOLS)}, ensure_ascii=False), encoding="utf-8")
     tokenizer = VitsTokenizer(str(vocab), pad_token="_", unk_token="_", add_blank=True, phonemize=True)
-    config = VitsConfig(vocab_size=len(VITS_SYMBOLS), hidden_size=32, num_hidden_layers=2, num_attention_heads=2,
+    config = VitsConfig(vocab_size=len(VCTK_SYMBOLS), hidden_size=32, num_hidden_layers=2, num_attention_heads=2,
                         ffn_dim=64, flow_size=32, upsample_initial_channel=32, num_speakers=num_speakers,
                         speaker_embedding_size=16, prior_encoder_num_flows=2, prior_encoder_num_wavenet_layers=2,
                         posterior_encoder_num_wavenet_layers=2, duration_predictor_num_flows=2,
@@ -424,7 +472,7 @@ def test_hf_synthesis_is_seeded_and_reads_training_checkpoints(tmp_path):
     a3, _ = synth.synthesize("Hello world, this is a test.", seed=8)
     assert a1.ndim == 1 and a1.size > 0 and info["n_tokens"] > 0
     assert np.array_equal(a1, a2) and not np.array_equal(a1, a3)
-    assert synth.speaker_table().shape == (4, 16) and synth.frontend == "training"  # TextProcessor path
+    assert synth.speaker_table().shape == (4, 16) and synth.frontend == "training"  # the training text path
     assert "three hundred" in synth.prepare_text("I have 300 cats.")  # digits spelled out, not dropped
 
     _training_checkpoint(model, tmp_path / "run" / "checkpoint-1500")
@@ -630,97 +678,3 @@ def test_checkpoint_checks_find_the_trained_row_and_the_frozen_modules(tmp_path)
     leaky = check_experiment(state_of(_fine_tuned(base, 1)), reference, speaker_id=1,
                              freeze_mode="freeze_text_encoder")
     assert leaky["freeze_ok"] is False
-
-
-class _FakeASR:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def transcribe(self, audio_16k):
-        return "the clerk read sentence number one"
-
-
-class _FakeMOS:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def score(self, audio_16k):
-        return float(3.0 + min(float(np.std(audio_16k)), 1.0))
-
-
-@needs_transformers
-def test_evaluate_experiments_scores_resumes_and_reports(tmp_path, monkeypatch):
-    from scripts import evaluate, evaluate_experiments
-
-    data_root, split_dir = _fake_dataset(tmp_path, n=8)
-    base = _tiny_hf_model(tmp_path / "base", num_speakers=4)
-    ckpt = tmp_path / "checkpoints"
-    # saved under the name Michael's training writes (dots); the table lists the underscore name
-    _save_weights(_fine_tuned(base, 0), ckpt / "model.default.safetensors")
-    _save_weights(_fine_tuned(base, 1, freeze=("text_encoder",), seed=1), ckpt / "model_frozen.safetensors")
-    # training logs of the default run: loss histories, its settings and the split it trained on
-    runs = tmp_path / "outputs"
-    (runs / "default_run" / "run").mkdir(parents=True)
-    (runs / "default_run" / "splits").mkdir()
-    history = pd.DataFrame({"epoch": [1, 2, 3], "mel": [0.5, 0.45, 0.43], "kl": [2.0, 1.8, 1.7],
-                            "duration": [1.4, 1.3, 1.25], "fmaps": 1.0, "gen": 2.0, "disc": 2.4, "generator_total": 40.0})
-    history.to_csv(runs / "default_run" / "run" / "validation_loss_history.csv", index=False)
-    history.assign(mel=history["mel"] - 0.05).to_csv(runs / "default_run" / "run" / "training_loss_history.csv", index=False)
-    (runs / "default_run" / "run" / "training_config.json").write_text(json.dumps({"speaker_id": 0, "learning_rate": 2e-5,
-                                                                                    "speaker_embedding_lr_ratio": 1.0}))
-    pd.read_csv(split_dir / "train_manifest.csv").to_csv(runs / "default_run" / "splits" / "train_manifest.csv", index=False)
-    config = tmp_path / "default.yaml"
-    config.write_text("output_dir: outputs/default_run/\nspeaker_id: 0\nlearning_rate: 0.00002\n"
-                      "speaker_embedding_lr_ratio: 50.0\n")
-    experiments = tmp_path / "experiments.csv"
-    pd.DataFrame([
-        {"experiment": "default", "speaker_id": 0, "freeze_mode": "none", "config": str(config),
-         "checkpoint": str(ckpt / "model_default.safetensors")},
-        {"experiment": "frozen", "speaker_id": 1, "freeze_mode": "freeze_text_encoder", "config": "",
-         "checkpoint": str(ckpt / "model_frozen.safetensors")},
-    ]).to_csv(experiments, index=False)
-    plan = tmp_path / "plan.json"
-    plan.write_text(json.dumps({"baseline": "default", "sections": [{
-        "name": "freezing", "title": "Freezing", "systems": ["ground_truth", "pretrained_spk0", "default", "frozen"],
-        "pairs": [["default", "frozen"]], "before_after": [["pretrained_spk0", "default"]],
-        "extra_runs": {"default_again": "default_run"}, "speaker_vectors": True}]}))
-    for name, fake in (("WhisperASR", _FakeASR), ("SpeakerEncoder", _FakeEncoder), ("UTMOSPredictor", _FakeMOS)):
-        monkeypatch.setattr(evaluate, name, fake)
-    results = tmp_path / "results"
-    argv = ["--experiments", str(experiments), "--plan", str(plan), "--results_dir", str(results),
-            "--base_model", str(tmp_path / "base"), "--manifest", str(split_dir / "test_manifest.csv"),
-            "--data_root", str(data_root), "--device", "cpu", "--limit", "2", "--skip_timing", "--runs_dir", str(runs)]
-    report = evaluate_experiments.main(argv)
-
-    for system in ("default", "frozen", "ground_truth", "pretrained_spk0"):
-        summary = json.loads((results / system / "summary.json").read_text())
-        assert summary["n_utterances"] == 2 and not summary["unavailable_metrics"], system
-        assert "f0_hz" in summary["metrics"], system
-    assert len(list((results / "frozen" / "prompts").glob("*.wav"))) == 12
-    checks = pd.read_csv(results / "report" / "checks.csv").set_index("experiment")
-    assert bool(checks.loc["frozen", "freeze_ok"]) and bool(checks.loc["default", "speaker_ok"])
-    assert checks.loc["default", "test_in_training"] == 0  # its own split holds none of the test sentences
-    # the configured row's before/after comparison: the same row the checks found trained
-    assert checks.loc["frozen", "speaker_rel_l2"] == pytest.approx(checks.loc["frozen", "trained_row_change"])
-    assert -1 <= checks.loc["frozen", "speaker_cosine"] <= 1 and 0 <= checks.loc["frozen", "speaker_nearest"] < 4
-    assert "speaker_embedding_lr_ratio: run 1.0 vs config 50.0" in checks.loc["default", "settings_differ"]
-    assert checks.loc["frozen", "run_logs"] == "not found"
-    text = report.read_text(encoding="utf-8")
-    for expected in ("## Experiments", "## Checks", "## Overview", "## Freezing", "freezing_before_after.png",
-                     "| default | frozen |", "**Training logs.**", "No logs found for: frozen", "freezing_losses.png",
-                     "Logs only (no checkpoint scored): default_again", "| default_again | 3 |",
-                     "**How far did the speaker vector move?**", "| frozen | 1 |"):
-        assert expected in text, expected
-    for name in ("all/comparison.png", "freezing/comparison.png", "freezing_before_after.png", "freezing_losses.png"):
-        assert (results / "report" / name).is_file(), name
-    assert json.loads((results / "default" / "summary.json").read_text())["test_set"]["overlap"]
-
-    stamp = (results / "default" / "summary.json").stat().st_mtime
-    evaluate_experiments.main(argv + ["--skip_checks"])  # finished systems are skipped
-    assert (results / "default" / "summary.json").stat().st_mtime == stamp
-
-    (results / "report" / "checks.csv").write_text("")  # an interrupted run leaves it empty
-    test = pd.read_csv(split_dir / "test_manifest.csv")
-    test.iloc[::-1].to_csv(split_dir / "test_manifest.csv", index=False)  # other first-2 sentences: a new test set
-    evaluate_experiments.main(argv + ["--skip_checks", "--only", "default", "--skip_prompts"])
-    assert (results / "default" / "summary.json").stat().st_mtime != stamp  # re-scored, not reused

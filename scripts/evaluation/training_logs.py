@@ -1,6 +1,6 @@
 """Reads what scripts/train_model.py writes, so training losses can sit next to the test metrics.
 
-A run folder is a config's ``output_dir`` (e.g. ``outputs/no_droplayer/``):
+A run folder is a config's ``output_dir`` (e.g. ``outputs/worst_speaker_embedding/``):
 
   run/training_loss_history.csv     one row per epoch: epoch + LOSS_NAMES (scripts/plots.py)
   run/validation_loss_history.csv   the same losses on the validation split
@@ -50,7 +50,7 @@ def find_run_folder(experiment: str, config: Optional[PathLike] = None,
     """The folder holding this experiment's loss histories: ``<runs_dir>/<experiment>``, else the
     folder named by the config's output_dir (inside ``runs_dir``, then as written). The experiment's
     own name comes first because a config's output_dir can be reused by a later run with other
-    settings (e.g. the embedding-only YAML now points at a 50x-LR run)."""
+    settings."""
     output_dir = config_output_dir(config)
     candidates: List[Path] = []
     if runs_dir is not None:

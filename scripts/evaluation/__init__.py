@@ -13,6 +13,8 @@ timing          Latency / real-time-factor (RTF) measurement protocol.
 stats           Bootstrap confidence intervals, paired tests, Holm correction.
 prompts         The fixed qualitative prompts used for ``wav_examples/``.
 
+results         Tables, figures and audio players for the notebook's run table (section 1.4).
+
 Command-line entry points live one level up: ``scripts/synth.py``, ``scripts/evaluate.py``,
-``scripts/compare.py``, ``scripts/rank_speakers.py`` and ``scripts/evaluate_experiments.py``.
+``scripts/rank_speakers.py`` and ``scripts/pretrained_validation_losses.py``.
 """

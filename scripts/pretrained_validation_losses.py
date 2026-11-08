@@ -2,15 +2,16 @@
 """Validation losses of the pretrained model before any fine-tuning ("epoch 0").
 
 Runs the validation pass of scripts/train_model.py (its ``evaluate`` function, unchanged) on the
-pretrained checkpoint, once per starting speaker, on the round-2 validation split. The training
-logs start at epoch 1, so this gives the loss curves their starting point. Run from the repo root:
+pretrained checkpoint, once per speaker, on the validation split from notebook section 1.1. The
+training logs start at epoch 1, so this gives the loss curves their starting point. From the repo root:
 
   python scripts/pretrained_validation_losses.py --speaker_ids 7 24
+  python scripts/pretrained_validation_losses.py --all_speakers --max_eval_samples 128 --out results/speaker_ranking/mel_losses.csv
 
-The settings (sample rate, loss weights, seed...) come from a round-2 run's training_config.json, and
-the validation clips from that run's saved split, so epoch 0 is scored exactly like epochs 1-15.
-Two differences, both negligible for a plot: the runs evaluated in bf16 on a GPU, this script in
-float32 on the CPU; and the losses include VITS's random segment and noise sampling, as every epoch does.
+The second command ranks every trained VCTK voice by how well the pretrained model reconstructs LJ with it
+(slow on a CPU, since it reloads the model for each voice). The settings (sample rate, loss weights, seed)
+come from a run's training_config.json, so epoch 0 is scored like epochs 1-15, except that the runs
+evaluated in bf16 on a GPU and this script in float32 on the CPU.
 """
 from __future__ import annotations
 
@@ -28,16 +29,18 @@ if str(REPO) not in sys.path:
 import pandas as pd  # noqa: E402
 import torch  # noqa: E402
 
-RUN_CONFIG = "outputs_v2/best_speaker_embedding/run/training_config.json"
-OUT = "outputs_v2/pretrained_validation_losses.csv"
+RUN_CONFIG = "outputs/best_speaker_embedding/run/training_config.json"
+OUT = "results/pretrained_validation_losses.csv"
+TRAINED_SPEAKERS = 108  # VCTK indices 0-107; index 108 was never trained (scripts/rank_speakers.py)
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--config", default=RUN_CONFIG, help="a round-2 run's training_config.json (default: %(default)s)")
-    p.add_argument("--speaker_ids", type=int, nargs="+", default=[7, 24], help="starting speakers to score")
-    p.add_argument("--split_dir", help="folder with the run's train/val/test manifests "
-                                       "(default: the splits/ folder next to the config's run/ folder)")
+    p.add_argument("--config", default=RUN_CONFIG, help="a run's training_config.json (default: %(default)s)")
+    p.add_argument("--speaker_ids", type=int, nargs="+", default=[7, 24], help="speakers to score")
+    p.add_argument("--all_speakers", action="store_true", help="score every trained VCTK speaker (0-107)")
+    p.add_argument("--max_eval_samples", type=int, help="only the first N validation clips (default: all)")
+    p.add_argument("--split_dir", default="dataset/splits", help="the split from notebook section 1.1")
     p.add_argument("--data_root", help="LJSpeech folder (default: the config's data_root)")
     p.add_argument("--model", help="pretrained checkpoint (default: the config's model_name_or_path)")
     p.add_argument("--batch_size", type=int, default=16, help="validation batch size (default: %(default)s)")
@@ -53,11 +56,10 @@ def load_run_config(args: argparse.Namespace):
     config = Path(args.config)
     # training_config.json is JSON: read it as such (YAML would read "4e-05" as a string).
     settings = json.loads(config.read_text(encoding="utf-8")) if config.suffix == ".json" else load_config(config)
-    split_dir = Path(args.split_dir) if args.split_dir else config.parent.parent / "splits"
-    settings.update(output_split_dir=str(split_dir), output_dir=str(config.parent.parent),
+    settings.update(output_split_dir=str(args.split_dir), output_dir=str(config.parent.parent),
                     per_device_train_batch_size=args.batch_size, per_device_eval_batch_size=args.batch_size,
                     num_workers=args.num_workers, persistent_workers=args.num_workers > 0,
-                    do_eval=True, max_eval_samples=None)
+                    do_eval=True, max_eval_samples=args.max_eval_samples)
     if args.data_root:
         settings["data_root"] = args.data_root
     if args.model:
@@ -109,11 +111,10 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
     from scripts.evaluation.synthesizer import _use_bundled_espeak
 
     args = parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     _use_bundled_espeak()  # the tokenizer phonemises with espeak-ng; no system install needed
     cfg = load_run_config(args)
     rows = []
-    for speaker_id in args.speaker_ids:
+    for speaker_id in range(TRAINED_SPEAKERS) if args.all_speakers else args.speaker_ids:
         logging.info("Scoring the pretrained model with speaker %d on %s", speaker_id, cfg.output_split_dir)
         rows.append({"speaker_id": speaker_id, "epoch": 0, **pretrained_losses(cfg, speaker_id)})
         logging.info("speaker %d: %s", speaker_id, {k: round(v, 4) for k, v in rows[-1].items()
@@ -127,4 +128,5 @@ def main(argv: Optional[List[str]] = None) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     main()

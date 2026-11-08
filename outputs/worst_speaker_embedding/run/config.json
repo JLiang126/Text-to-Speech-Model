@@ -1,7 +1,7 @@
 {
   "activation_dropout": 0.1,
   "architectures": [
-    "VitsModelForPreTraining"
+    "VitsModel"
   ],
   "attention_dropout": 0.1,
   "depth_separable_channels": 2,

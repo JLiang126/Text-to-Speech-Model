@@ -15,9 +15,6 @@ Full run on a GPU (every training sentence; --resume continues a stopped run):
 
 Re-analyse a finished run without synthesising again (same options + --resume), or extend it
 with more sentences (larger --n_utts + --resume keeps the sentences already done).
-Cross-check a few speakers with more sentences of MCD, in a separate folder:
-
-  python scripts/rank_speakers.py --n_utts 5 --speakers 7,24,47 --mcd_utts 5 --out_dir results/speaker_check
 
 The model defaults to the checkpoint fine-tuning starts from
 (ylacombe/vits-vctk-with-discriminator, downloaded on first use).

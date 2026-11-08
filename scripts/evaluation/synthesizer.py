@@ -1,8 +1,7 @@
 """Text -> waveform with a trained VITS model (the one synthesis path used everywhere).
 
 Checkpoints are in the Hugging Face format (``transformers.VitsModel``) that finetune-hf-vits
-(Y. Lacombe, https://github.com/ylacombe/finetune-hf-vits, reference copy in ``finetune-hf-vits-main/``)
-loads and saves: the pretrained ``ylacombe/vits-vctk-with-discriminator``, a run's output folder, one of
+(Y. Lacombe, https://github.com/ylacombe/finetune-hf-vits) loads and saves: the pretrained ``ylacombe/vits-vctk-with-discriminator``, a run's output folder, one of
 its ``checkpoint-<step>`` folders, or a bare weights file. ``HFVITSSynthesizer`` gives one interface,
 ``synthesize(text, seed)`` -> (waveform, timing), with ``sample_rate``, ``speaker_id`` and ``n_speakers``.
 Its text front-end is the training data's: ``clean_normalised_text`` and the fixed VCTK tokenizer from
@@ -123,7 +122,7 @@ def resolve_hf_model(model: PathLike, base_model: PathLike = DEFAULT_BASE_MODEL
     - a ``checkpoint-<step>`` folder written by ``accelerator.save_state`` during training:
       it holds only weights, so config/tokenizer come from the run folder above it
       -> (run folder, weights file)
-    - a bare weights file (e.g. model_no_droplayer.safetensors): fine-tuning keeps the
+    - a bare weights file (e.g. model.worst_speaker_embedding.safetensors): fine-tuning keeps the
       architecture and tokenizer, so config/tokenizer come from ``base_model``
       -> (base_model, weights file)
     - anything else is treated as a Hugging Face hub id -> (id, None)

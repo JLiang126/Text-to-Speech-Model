@@ -1,4 +1,4 @@
-experiment_description: Original VITS vctk configuration. May not be optimal for all datasets.
+experiment_description: Original VITS vctk configuration using speaker 24. May not be optimal for all datasets.
 
 # Dataset and text preprocessing
 data_root: ./dataset/
@@ -27,7 +27,7 @@ f_max: 8000.0 # original suggets 11025
 
 # Model checkpoint
 model_name_or_path: ylacombe/vits-vctk-with-discriminator
-speaker_id: 7
+speaker_id: 24
 
 # Training
 # Base output folder; run files are stored in its fixed run/ subdirectory.
