@@ -3,89 +3,91 @@
   "ground_truth": false,
   "step": null,
   "checkpoint": "ylacombe/vits-vctk-with-discriminator",
-  "config": null,
   "speaker_id": 24,
-  "manifest": "dataset/splits/test_manifest.csv",
+  "manifest": "dataset/eval_split/test_manifest.csv",
   "n_utterances": 150,
   "test_set": {
-    "manifest": "dataset/splits/test_manifest.csv",
+    "manifest": "dataset/eval_split/test_manifest.csv",
     "n": 150,
     "fingerprint": "e705482d0bf0",
     "overlap": {
-      "C:\\Users\\Admin\\Downloads\\GenAI assgn 3\\tts-eval\\dataset\\splits\\train_manifest.csv": 0,
-      "C:\\Users\\Admin\\Downloads\\GenAI assgn 3\\tts-eval\\dataset\\splits\\val_manifest.csv": 0
+      "/home/michael/Documents/python/projects/gen_AI2/Text-to-Speech-Model/dataset/eval_split/train_manifest.csv": 0,
+      "/home/michael/Documents/python/projects/gen_AI2/Text-to-Speech-Model/dataset/eval_split/val_manifest.csv": 0
     }
   },
   "metrics": {
     "mcd_dtw": {
-      "mean": 4.682068467206126,
-      "ci_low": 4.646279275786549,
-      "ci_high": 4.717671206415435,
+      "mean": 4.675802490137278,
+      "ci_low": 4.641429728503937,
+      "ci_high": 4.710587899550361,
       "n": 150
     },
     "dur_ratio": {
-      "mean": 0.6307461644382113,
-      "ci_low": 0.6193366261412239,
-      "ci_high": 0.642413412438286,
+      "mean": 0.6306709043936877,
+      "ci_low": 0.6193734378177485,
+      "ci_high": 0.6423057029501621,
       "n": 150
     },
     "wer": {
-      "mean": 0.09331784730975738,
-      "ci_low": 0.07565380673962398,
-      "ci_high": 0.11259256922513805,
+      "mean": 0.09398742935870409,
+      "ci_low": 0.07332007047915615,
+      "ci_high": 0.11714409166550234,
       "n": 150
     },
     "cer": {
-      "mean": 0.0457251039370467,
-      "ci_low": 0.03541772700071944,
-      "ci_high": 0.05822273877932508,
+      "mean": 0.04569105130703728,
+      "ci_low": 0.033754631156771915,
+      "ci_high": 0.05980273831315959,
       "n": 150
     },
     "secs": {
-      "mean": -0.1224145762900391,
-      "ci_low": -0.12761555749521875,
-      "ci_high": -0.11722735187211969,
+      "mean": -0.11756281099657452,
+      "ci_low": -0.12313203067244856,
+      "ci_high": -0.11171724608930944,
       "n": 150
     },
     "secs_paired": {
-      "mean": -0.08876444208090466,
-      "ci_low": -0.09793169930936263,
-      "ci_high": -0.07935236203775196,
+      "mean": -0.08338033783210268,
+      "ci_low": -0.09312959609951106,
+      "ci_high": -0.07324763265151474,
       "n": 150
     },
     "utmos": {
-      "mean": 3.95128777662913,
-      "ci_low": 3.927121713399887,
-      "ci_high": 3.9762228521505993,
+      "mean": 3.957173988024394,
+      "ci_low": 3.9311473064819973,
+      "ci_high": 3.9828331952889764,
       "n": 150
     },
     "f0_hz": {
-      "mean": 199.37938529182333,
-      "ci_low": 198.68692483238127,
-      "ci_high": 200.10211647727357,
+      "mean": 199.4692893419391,
+      "ci_low": 198.79505417031774,
+      "ci_high": 200.162198157386,
       "n": 150
     }
   },
   "corpus": {
     "wer": {
-      "value": 0.08613524744994333,
-      "ci_low": 0.07063559050306305,
-      "ci_high": 0.10290033052289288
+      "value": 0.08046845485455233,
+      "ci_low": 0.06404099636377643,
+      "ci_high": 0.09811524528590246
     },
     "cer": {
-      "value": 0.04188730482009504,
-      "ci_low": 0.03250084221137969,
-      "ci_high": 0.0537171669073521
+      "value": 0.03937542430414121,
+      "ci_low": 0.029588254559616545,
+      "ci_high": 0.05111498342888061
     }
   },
   "latency": {},
   "device": {
-    "device": "cpu",
-    "cpu": "Intel64 Family 6 Model 126 Stepping 5, GenuineIntel",
-    "torch_threads": 4,
-    "torch": "2.14.1+cpu",
-    "python": "3.13.16",
-    "os": "Windows-11-10.0.26300-SP0"
+    "device": "cuda",
+    "cpu": "AMD Ryzen 7 7700X 8-Core Processor",
+    "torch_threads": 8,
+    "torch": "2.14.1+cu130",
+    "python": "3.12.3",
+    "os": "Linux-6.14.0-37-generic-x86_64-with-glibc2.39",
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "cuda": "13.0",
+    "gpu_memory_gb": 33.7
   },
   "settings": {
     "seed": 1234,
@@ -102,7 +104,7 @@
   "unavailable_metrics": {},
   "versions": {
     "torch": "2.14.1",
-    "numpy": "2.5.4",
+    "numpy": "2.4.6",
     "librosa": "1.0.0",
     "jiwer": "4.0.0",
     "openai-whisper": "20250625",

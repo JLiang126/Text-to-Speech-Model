@@ -1,6 +1,6 @@
 {
   "experiment": "unfreeze_speech_embeddings_only_WSE",
-  "checkpoint": "outputs\\unfreeze_speech_embeddings_only_WSE\\run\\model.unfreeze_speech_embeddings_only_WSE.safetensors",
+  "checkpoint": "outputs/unfreeze_speech_embeddings_only_WSE/run/model.unfreeze_speech_embeddings_only_WSE.safetensors",
   "seed": 1234,
   "speaker_id": 24,
   "prompts": [

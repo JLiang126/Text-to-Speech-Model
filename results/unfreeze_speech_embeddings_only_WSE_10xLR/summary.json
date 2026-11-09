@@ -2,92 +2,92 @@
   "experiment": "unfreeze_speech_embeddings_only_WSE_10xLR",
   "ground_truth": false,
   "step": null,
-  "checkpoint": "outputs_v2\\unfreeze_speech_embeddings_only_WSE_10xLR\\run\\model.unfreeze_speech_embeddings_only_WSE_10xLR.safetensors",
-  "config": null,
+  "checkpoint": "outputs/unfreeze_speech_embeddings_only_WSE_10xLR/run/model.unfreeze_speech_embeddings_only_WSE_10xLR.safetensors",
   "speaker_id": 24,
-  "manifest": "dataset/splits/test_manifest.csv",
+  "manifest": "dataset/eval_split/test_manifest.csv",
   "n_utterances": 150,
   "test_set": {
-    "manifest": "dataset/splits/test_manifest.csv",
+    "manifest": "dataset/eval_split/test_manifest.csv",
     "n": 150,
     "fingerprint": "e705482d0bf0",
     "overlap": {
-      "outputs_v2\\unfreeze_speech_embeddings_only_WSE_10xLR\\splits\\train_manifest.csv": 0,
-      "outputs_v2\\unfreeze_speech_embeddings_only_WSE_10xLR\\splits\\val_manifest.csv": 0,
-      "dataset\\splits\\train_manifest.csv": 0,
-      "dataset\\splits\\val_manifest.csv": 0
+      "/home/michael/Documents/python/projects/gen_AI2/Text-to-Speech-Model/dataset/eval_split/train_manifest.csv": 0,
+      "/home/michael/Documents/python/projects/gen_AI2/Text-to-Speech-Model/dataset/eval_split/val_manifest.csv": 0
     }
   },
   "metrics": {
     "mcd_dtw": {
-      "mean": 4.25252388718667,
-      "ci_low": 4.218853712577333,
-      "ci_high": 4.286655402114483,
+      "mean": 4.251155033864625,
+      "ci_low": 4.217958049942241,
+      "ci_high": 4.284096818782385,
       "n": 150
     },
     "dur_ratio": {
-      "mean": 0.7512609860659224,
-      "ci_low": 0.738892660731739,
-      "ci_high": 0.7639732572600539,
+      "mean": 0.7518860669152438,
+      "ci_low": 0.7393665719221303,
+      "ci_high": 0.7650414650341325,
       "n": 150
     },
     "wer": {
-      "mean": 0.08069841487139912,
-      "ci_low": 0.061863149187376544,
-      "ci_high": 0.10187288299067508,
+      "mean": 0.08401757856642095,
+      "ci_low": 0.0644553604419192,
+      "ci_high": 0.1062091132685883,
       "n": 150
     },
     "cer": {
-      "mean": 0.03695514324920189,
-      "ci_low": 0.026861504288146036,
-      "ci_high": 0.04940591495801762,
+      "mean": 0.036200491657943375,
+      "ci_low": 0.02564481225252518,
+      "ci_high": 0.0495334117519807,
       "n": 150
     },
     "secs": {
-      "mean": 0.1692318287337752,
-      "ci_low": 0.16070814954674723,
-      "ci_high": 0.17794594787540852,
+      "mean": 0.16825703811482845,
+      "ci_low": 0.16022771792747076,
+      "ci_high": 0.1763589264935223,
       "n": 150
     },
     "secs_paired": {
-      "mean": 0.17467161095783407,
-      "ci_low": 0.16187206504467366,
-      "ci_high": 0.18787010141224356,
+      "mean": 0.1708905583463212,
+      "ci_low": 0.15888355472972343,
+      "ci_high": 0.182858404574929,
       "n": 150
     },
     "utmos": {
-      "mean": 4.176590965588887,
-      "ci_low": 4.152988574624061,
-      "ci_high": 4.1994567507902785,
+      "mean": 4.144611959457397,
+      "ci_low": 4.116925418734551,
+      "ci_high": 4.171105260531108,
       "n": 150
     },
     "f0_hz": {
-      "mean": 200.27515500204686,
-      "ci_low": 199.22719324757304,
-      "ci_high": 201.36191262949083,
+      "mean": 200.74102185864336,
+      "ci_low": 199.74751774405772,
+      "ci_high": 201.7761010372935,
       "n": 150
     }
   },
   "corpus": {
     "wer": {
-      "value": 0.06837929731771818,
-      "ci_low": 0.05302731448576504,
-      "ci_high": 0.08530246317314656
+      "value": 0.07064601435587457,
+      "ci_low": 0.05642744592143733,
+      "ci_high": 0.08670531174695169
     },
     "cer": {
-      "value": 0.032586558044806514,
-      "ci_low": 0.023342971936804492,
-      "ci_high": 0.04439354921295781
+      "value": 0.03170400543109301,
+      "ci_low": 0.02301717756343354,
+      "ci_high": 0.04320364164511199
     }
   },
   "latency": {},
   "device": {
-    "device": "cpu",
-    "cpu": "Intel64 Family 6 Model 126 Stepping 5, GenuineIntel",
-    "torch_threads": 4,
-    "torch": "2.14.1+cpu",
-    "python": "3.13.16",
-    "os": "Windows-11-10.0.26300-SP0"
+    "device": "cuda",
+    "cpu": "AMD Ryzen 7 7700X 8-Core Processor",
+    "torch_threads": 8,
+    "torch": "2.14.1+cu130",
+    "python": "3.12.3",
+    "os": "Linux-6.14.0-37-generic-x86_64-with-glibc2.39",
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "cuda": "13.0",
+    "gpu_memory_gb": 33.7
   },
   "settings": {
     "seed": 1234,
@@ -104,7 +104,7 @@
   "unavailable_metrics": {},
   "versions": {
     "torch": "2.14.1",
-    "numpy": "2.5.4",
+    "numpy": "2.4.6",
     "librosa": "1.0.0",
     "jiwer": "4.0.0",
     "openai-whisper": "20250625",

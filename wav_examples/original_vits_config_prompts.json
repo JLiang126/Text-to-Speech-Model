@@ -1,6 +1,6 @@
 {
   "experiment": "original_vits_config",
-  "checkpoint": "outputs\\original_vits_config\\run\\model.original_vits_config.safetensors",
+  "checkpoint": "outputs/original_vits_config/run/model.original_vits_config.safetensors",
   "seed": 1234,
   "speaker_id": 24,
   "prompts": [
