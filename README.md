@@ -6,11 +6,15 @@ ARTI5001 Assignment 3, group 55: fine-tuning the pretrained VITS model
 ## Setup
 
 ```bash
+python3 -m venv .venv
 pip install -r requirements.txt
 ```
 
-Put LJSpeech 1.1 in `dataset/LJSpeech-1.1/`, and unzip the shared checkpoints into the repo root
-(this adds the checkpoints in `outputs/<run>/run/`). Then run the notebook from the top.
+Put LJSpeech dataset in `dataset/LJSpeech-1.1/`, and run 
+
+```bash
+jupyter notebook
+```
 
 ## Folders
 
@@ -18,7 +22,8 @@ Put LJSpeech 1.1 in `dataset/LJSpeech-1.1/`, and unzip the shared checkpoints in
 |---|---|
 | `experiment_variables.csv` | every experiment's settings, label and description; the notebook's run table reads it |
 | `configs/` | one training config per experiment |
-| `outputs/` | one folder per run: the settings it used, its loss histories and its checkpoint |
+| `outputs/` | one folder per run: the settings it used, its loss histories |
+| `checkpoints/` | Holds the checkpoints |
 | `results/` | the scores of every system, the checkpoint checks, the speaker ranking, the timing and the report figures |
 | `wav_examples/` | the 12 qualitative prompts read by every system |
 | `scripts/` | data, training, inference and evaluation code (`scripts/evaluation/README.md` explains the evaluation) |
