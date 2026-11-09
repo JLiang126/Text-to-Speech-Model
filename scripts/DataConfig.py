@@ -6,7 +6,6 @@ from typing import Dict, Optional, Tuple
 
 import yaml
 
-
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "best_speaker_embedding.yaml"
 
 
@@ -31,9 +30,6 @@ def load_config(config_path: Path) -> Dict:
 class DataConfig:
     """
     Dataset Configuration for experiment set up.
-
-    Note that the majority of the configuration is derived from the YAML file specified at runtime.
-
     """
     experiment_description: str = "Default experiment configuration."
 
@@ -126,9 +122,11 @@ class DataConfig:
         self.data_root = Path(self.data_root)
         if not (self.data_root / "metadata.csv").exists() and (self.data_root / "LJSpeech-1.1").is_dir():
             self.data_root /= "LJSpeech-1.1"
+
         self.output_dir = Path(self.output_dir)
         if self.output_split_dir is None:
             raise ValueError("output_split_dir must be resolved before validation.")
+        
         self.output_split_dir = Path(self.output_split_dir)
         split_dir_resolved = self.output_split_dir.resolve()
         data_root_resolved = self.data_root.resolve()

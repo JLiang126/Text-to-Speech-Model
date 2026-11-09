@@ -18,8 +18,7 @@ from scripts.TextProcessor import clean_normalised_text, configure_espeak
 from scripts.AudioProcessor import AudioProcessor
 
 
-def _configure_espeak_worker(_: int) -> None:
-    configure_espeak()
+def _configure_espeak_worker(_: int) -> None: configure_espeak()
 
 
 def set_global_seed(seed: int = 42) -> None:
@@ -50,17 +49,12 @@ def build_splits(cfg: DataConfig) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     out_dir = Path(cfg.output_split_dir)
     # Resolve paths so relative paths and symlinks cannot hide writes into the dataset.
     # relative_to succeeds only when the output is the dataset itself or a descendant.
-    try:
-        out_dir.resolve().relative_to(data_root.resolve())
-    except ValueError:
-        pass
-    else:
-        raise ValueError(
-            f"Split output directory must be outside the dataset directory: {out_dir}"
-        )
+    try: out_dir.resolve().relative_to(data_root.resolve())
+    except ValueError: pass
+    else: raise ValueError(f"Split output directory must be outside the dataset directory: {out_dir}")
+
     metadata_path = data_root / "metadata.csv"
     wavs_dir = data_root / "wavs"
-
     if not metadata_path.exists(): raise FileNotFoundError(f"LJSpeech metadata.csv not found at {metadata_path.resolve()}")
 
     records = []
@@ -73,7 +67,6 @@ def build_splits(cfg: DataConfig) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
                 raw_text = parts[1].strip()
                 norm_text = parts[2].strip()
                 wav_path = wavs_dir / f"{utt_id}.wav"
-                
 
                 if wav_path.exists():
                     # WAV headers provide duration without decoding the full recording.
@@ -81,6 +74,7 @@ def build_splits(cfg: DataConfig) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
                         sample_rate = wf.getframerate()
                         num_channels = wf.getnchannels()
                         num_frames = wf.getnframes()
+
                     duration_sec = num_frames / float(sample_rate)
                     # Manifest cleaning preserves Unicode; checkpoint phonemization happens later.
                     clean_text = clean_normalised_text(norm_text, lowercase=cfg.lowercase)
@@ -114,8 +108,7 @@ def build_splits(cfg: DataConfig) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
 
     # None keeps every record; slicing also safely handles equal or oversized limits.
     df_subset = df_shuffled
-    if cfg.subset_size is not None:
-        df_subset = df_shuffled.iloc[: int(cfg.subset_size)].reset_index(drop=True)
+    if cfg.subset_size is not None: df_subset = df_shuffled.iloc[: int(cfg.subset_size)].reset_index(drop=True)
 
     # Integer rounding applies to train and validation; test receives the remainder.
     n_total = len(df_subset)
@@ -175,7 +168,6 @@ class LJSpeechDataset(Dataset):
     Text pre-processing is as follows:
     1. Take the normalised text from the 'norm_text' column of the manifest.
     2. Clean the text as needed (e.g., removing unwanted characters or formatting).
-    
     """
 
     def __init__(

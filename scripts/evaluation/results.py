@@ -67,11 +67,11 @@ def _available(checkpoint) -> bool:
 
 def checkpoint_path(name: str) -> str:
     """A run's weights, model.<name>.safetensors, in outputs/<name>/run/ (from training or the shared zip of the
-    runs) or in checkpoints/outputs/<name>/run/ (checkpoints.zip); <name>.safetensors is accepted too."""
-    for folder in (Path("outputs") / name / "run", Path("checkpoints") / "outputs" / name / "run"):
-        for file in (f"model.{name}.safetensors", f"{name}.safetensors"):
-            if (folder / file).is_file():
-                return str(folder / file)
+    runs); <name>.safetensors is accepted too."""
+    folder = Path("outputs") / name / "run"
+    for file in (f"model.{name}.safetensors", f"{name}.safetensors"):
+        if (folder / file).is_file():
+            return str(folder / file)
     return str(Path("outputs") / name / "run" / f"model.{name}.safetensors")
 
 
@@ -442,7 +442,10 @@ def make_examples(runs: pd.DataFrame, ids, out_dir="wav_examples") -> None:
     if made:
         print(f"Wrote the {len(PROMPTS)} prompts for {', '.join(made)} to {out_dir}/")
     if missing:
-        print(f"No checkpoint on this machine for {', '.join(missing)}: unzip checkpoints.zip to add their prompts")
+        print(
+            f"No checkpoint on this machine for {', '.join(missing)}: put "
+            "group55_VITS_checkpoints.zip in the repository root and rerun the notebook"
+        )
 
 
 # ------------------------------------------------------------------ scoring (slow, needs the checkpoints)

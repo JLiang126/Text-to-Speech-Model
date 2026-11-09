@@ -1,17 +1,6 @@
 import re
-
-from typing import List, Union
-
-import torch
-import unicodedata
-
-
-import re
 import logging
 
-from typing import List, Union
-
-import torch
 import unicodedata
 from transformers import AddedToken, VitsTokenizer
 
@@ -25,14 +14,9 @@ def configure_espeak() -> None:
     EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
 
 
-
 class WordMismatchFilter(logging.Filter):
     """
-    Filter for suppressing Phonemizer's word-count warnings.
-
-    This filter checks if a log record is a warning and if its message starts
-    with "words count mismatch on ". If both conditions are met, the record
-    is filtered out (i.e., suppressed).
+    Suppress phonemizer's word count warnings.
     """
     def filter(self, record: logging.LogRecord) -> bool:
         is_warning = record.levelno == logging.WARNING
@@ -42,28 +26,14 @@ class WordMismatchFilter(logging.Filter):
 
 def configure_word_mismatch_warnings(suppress: bool) -> None:
     """
-    Configure only Phonemizer's word-count warnings in the current process.
-
-    This is used because Phonemizer may emit word-count warnings that are not relevant
-    to the current processing context, and we want to selectively suppress them.
-
-    I've added this code since the checkpoint's tokeniser doesn't directly
-    allow for setting words_mismatch="ignore" in the phonemizer directly.
-    
-    Args:
-        suppress (bool): If True, suppress word-count warnings; otherwise, show them.
-
+    Configure phonemizer's word count warnings in the current process.
     """
     # initialise the word mismatch filter
     word_mismatch_filter = WordMismatchFilter()
 
     logger = logging.getLogger("phonemizer")
-    if suppress:
-        logger.addFilter(word_mismatch_filter)
-    else:
-        logger.removeFilter(word_mismatch_filter)
-
-
+    if suppress: logger.addFilter(word_mismatch_filter)
+    else: logger.removeFilter(word_mismatch_filter)
 
 
 def replace_brackets(match: re.Match[str]) -> str:
@@ -129,7 +99,7 @@ def clean_normalised_text(text: str, lowercase: bool = False, brackets_to_commas
 
 def load_vctk_tokenizer(checkpoint: str) -> VitsTokenizer:
     """
-    Load VCTK with distinct IDs for the unknown token and stroke-i phoneme.
+    Load VCTK with distinct IDs.
 
     Note that this fix specifically addresses the ID collision between the 
     "<unk>" token and the phoneme "ᵻ" in the pretrained VCTK tokenizer. 
@@ -150,17 +120,13 @@ def load_vctk_tokenizer(checkpoint: str) -> VitsTokenizer:
     )
 
     # verify that the special token mappings are what we expect
-    if tokenizer.encoder.get("ᵻ") != 177:
-        raise ValueError("Unexpected checkpoint mapping for ᵻ")
+    if tokenizer.encoder.get("ᵻ") != 177: raise ValueError("Unexpected checkpoint mapping for ᵻ")
     # raise an error if ID 174 is occupied by a pretrained symbol other than "<unk>"
     matching = [token for token, token_id in tokenizer.encoder.items() if token_id == 174 and token != "<unk>"]
-    if any(matching):
-        raise ValueError("ID 174 is occupied by a pretrained symbol")
+    if any(matching): raise ValueError("ID 174 is occupied by a pretrained symbol")
 
     # Assign the "<unk>" token to ID 174 explicitly
     tokenizer.encoder["<unk>"] = 174 
-    # Assign the "<unk>" token to ID 174 in the decoder as well
-    # note that it's in the opposite mapping direction compared to the encoder
-    tokenizer.decoder[174] = "<unk>" 
+    tokenizer.decoder[174] = "<unk>"  # note that it's in the opposite mapping direction compared to the encoder
     tokenizer.add_special_tokens({"unk_token": "<unk>"}) # Register the unknown token with the tokenizer to refresh vocabulary metadata
     return tokenizer
