@@ -3,42 +3,41 @@
   "ground_truth": true,
   "step": null,
   "checkpoint": null,
-  "config": null,
   "speaker_id": null,
-  "manifest": "dataset/splits/test_manifest.csv",
+  "manifest": "dataset/eval_split/test_manifest.csv",
   "n_utterances": 150,
   "test_set": {
-    "manifest": "dataset/splits/test_manifest.csv",
+    "manifest": "dataset/eval_split/test_manifest.csv",
     "n": 150,
     "fingerprint": "e705482d0bf0",
     "overlap": {
-      "C:\\Users\\Admin\\Downloads\\GenAI assgn 3\\tts-eval\\dataset\\splits\\train_manifest.csv": 0,
-      "C:\\Users\\Admin\\Downloads\\GenAI assgn 3\\tts-eval\\dataset\\splits\\val_manifest.csv": 0
+      "/home/michael/Documents/python/projects/gen_AI2/Text-to-Speech-Model/dataset/eval_split/train_manifest.csv": 0,
+      "/home/michael/Documents/python/projects/gen_AI2/Text-to-Speech-Model/dataset/eval_split/val_manifest.csv": 0
     }
   },
   "metrics": {
     "wer": {
-      "mean": 0.026575702910680697,
-      "ci_low": 0.014062074907781429,
-      "ci_high": 0.0422579312260866,
+      "mean": 0.027088523423501213,
+      "ci_low": 0.014596158054721288,
+      "ci_high": 0.042685571572378,
       "n": 150
     },
     "cer": {
-      "mean": 0.010517013707656836,
-      "ci_low": 0.0034525544909080595,
-      "ci_high": 0.021156115306956925,
+      "mean": 0.01059277128341441,
+      "ci_low": 0.003554196849892719,
+      "ci_high": 0.021247193869581175,
       "n": 150
     },
     "secs": {
-      "mean": 0.8495775345236571,
-      "ci_low": 0.8424597698186402,
-      "ci_high": 0.8565363006366871,
+      "mean": 0.8495720881091063,
+      "ci_low": 0.8424547464792195,
+      "ci_high": 0.8565313049141987,
       "n": 150
     },
     "utmos": {
-      "mean": 4.383875468571981,
-      "ci_low": 4.366709132909775,
-      "ci_high": 4.399848955869675,
+      "mean": 4.383831904729207,
+      "ci_low": 4.3666624082724255,
+      "ci_high": 4.3998272645076115,
       "n": 150
     },
     "f0_hz": {
@@ -50,24 +49,27 @@
   },
   "corpus": {
     "wer": {
-      "value": 0.019644880997355497,
-      "ci_low": 0.010715585353616108,
-      "ci_high": 0.031437361126802996
+      "value": 0.020022667170381564,
+      "ci_low": 0.011027511444099239,
+      "ci_high": 0.03186474886291108
     },
     "cer": {
-      "value": 0.009775967413441956,
-      "ci_low": 0.0027900156338739,
-      "ci_high": 0.020638991136263357
+      "value": 0.009843856076035303,
+      "ci_low": 0.0028554115936689035,
+      "ci_high": 0.02070665614749474
     }
   },
   "latency": {},
   "device": {
-    "device": "cpu",
-    "cpu": "Intel64 Family 6 Model 126 Stepping 5, GenuineIntel",
-    "torch_threads": 4,
-    "torch": "2.14.1+cpu",
-    "python": "3.13.16",
-    "os": "Windows-11-10.0.26300-SP0"
+    "device": "cuda",
+    "cpu": "AMD Ryzen 7 7700X 8-Core Processor",
+    "torch_threads": 8,
+    "torch": "2.14.1+cu130",
+    "python": "3.12.3",
+    "os": "Linux-6.14.0-37-generic-x86_64-with-glibc2.39",
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "cuda": "13.0",
+    "gpu_memory_gb": 33.7
   },
   "settings": {
     "seed": 1234,
@@ -84,7 +86,7 @@
   "unavailable_metrics": {},
   "versions": {
     "torch": "2.14.1",
-    "numpy": "2.5.4",
+    "numpy": "2.4.6",
     "librosa": "1.0.0",
     "jiwer": "4.0.0",
     "openai-whisper": "20250625",

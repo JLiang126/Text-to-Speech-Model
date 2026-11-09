@@ -1,6 +1,6 @@
 {
   "experiment": "worst_speaker_embedding",
-  "checkpoint": "outputs_v2\\worst_speaker_embedding\\run\\model.worst_speaker_embedding.safetensors",
+  "checkpoint": "outputs/worst_speaker_embedding/run/model.worst_speaker_embedding.safetensors",
   "seed": 1234,
   "speaker_id": 24,
   "prompts": [
